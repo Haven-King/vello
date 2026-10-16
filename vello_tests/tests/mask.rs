@@ -88,3 +88,57 @@ fn mask_non_isolated(ctx: &mut impl Renderer) {
     ctx.set_paint(RED);
     ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
 }
+
+fn disc_mask(alpha_mask: bool) -> Mask {
+    let settings = RenderSettings {
+        level: Level::baseline(),
+        num_threads: 0,
+    };
+    let mut mask_ctx = RenderContext::new_with(60, 60, settings);
+    let mut mask_pix = Pixmap::new(60, 60);
+    mask_ctx.set_paint(vello_common::color::palette::css::WHITE);
+    mask_ctx.fill_path(&vello_common::kurbo::Shape::to_path(
+        &vello_common::kurbo::Circle::new((30.0, 30.0), 30.0),
+        0.1,
+    ));
+    mask_ctx.render(&mut mask_pix, &mut vello_cpu::Resources::new());
+    if alpha_mask {
+        Mask::new_alpha(&mask_pix)
+    } else {
+        Mask::new_luminance(&mask_pix)
+    }
+}
+
+fn placed_mask_layer(ctx: &mut impl Renderer, alpha_mask: bool) {
+    ctx.set_paint(BLACK);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 10.0));
+    ctx.push_mask_layer(disc_mask(alpha_mask).with_origin(20, 20));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
+    ctx.pop_layer();
+}
+
+#[vello_test]
+fn mask_alpha_placed(ctx: &mut impl Renderer) {
+    placed_mask_layer(ctx, true);
+}
+
+#[vello_test]
+fn mask_luminance_placed(ctx: &mut impl Renderer) {
+    placed_mask_layer(ctx, false);
+}
+
+#[vello_test]
+fn mask_placed_past_the_edge(ctx: &mut impl Renderer) {
+    ctx.push_mask_layer(disc_mask(true).with_origin(-30, -30));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
+    ctx.pop_layer();
+}
+
+#[vello_test(skip_gpu, skip_webgl)]
+fn mask_placed_set_mask(ctx: &mut impl Renderer) {
+    ctx.set_mask(disc_mask(true).with_origin(20, 20));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 50.0));
+}

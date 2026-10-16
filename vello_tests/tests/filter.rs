@@ -2221,3 +2221,31 @@ fn filter_offset_set_mask(ctx: &mut impl Renderer) {
     ctx.fill_rect(&Rect::new(40.0, 40.0, 100.0, 100.0));
     ctx.pop_layer();
 }
+
+/// Content past the corner is masked too, so the shadow is the whole disc.
+#[vello_test(skip_multithreaded, gpu_tolerance = 1)]
+fn filter_drop_shadow_placed_mask_past_the_edge(ctx: &mut impl Renderer) {
+    let settings = vello_cpu::RenderSettings {
+        level: vello_cpu::Level::baseline(),
+        num_threads: 0,
+    };
+    let mut mask_ctx = vello_cpu::RenderContext::new_with(60, 60, settings);
+    let mut mask_pix = vello_cpu::Pixmap::new(60, 60);
+    mask_ctx.set_paint(BLACK);
+    mask_ctx.fill_path(&Circle::new((30.0, 30.0), 30.0).to_path(0.1));
+    mask_ctx.render(&mut mask_pix, &mut vello_cpu::Resources::new());
+    let mask = vello_common::mask::Mask::new_alpha(&mask_pix).with_origin(-30, -30);
+
+    ctx.push_filter_layer(Filter::from_primitive(FilterPrimitive::DropShadow {
+        dx: 50.0,
+        dy: 50.0,
+        std_deviation: 0.0,
+        color: BLACK,
+        edge_mode: EdgeMode::None,
+    }));
+    ctx.push_mask_layer(mask);
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(-30.0, -30.0, 30.0, 30.0));
+    ctx.pop_layer();
+    ctx.pop_layer();
+}

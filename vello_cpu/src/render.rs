@@ -495,7 +495,7 @@ impl RenderContext {
     ///
     /// Note that the mask, if provided, needs to have the same size as the render context. Otherwise,
     /// it will be ignored. In addition to that, the mask will not be affected by the current
-    /// transformation matrix in place.
+    /// transformation matrix in place. A mask placed with [`Mask::with_origin`] may have any size.
     ///
     /// # Panics
     ///
@@ -509,7 +509,7 @@ impl RenderContext {
         filter: Option<Filter>,
     ) {
         let mask = mask.and_then(|m| {
-            if m.width() != self.width || m.height() != self.height {
+            if !m.is_placed() && (m.width() != self.width || m.height() != self.height) {
                 None
             } else {
                 Some(m)
@@ -566,8 +566,8 @@ impl RenderContext {
     }
 
     /// Push a new mask layer. The mask needs to have the same dimensions as the
-    /// render context. The mask will not be affected by the current transform
-    /// in place.
+    /// render context, unless placed with [`Mask::with_origin`]. The mask will not
+    /// be affected by the current transform in place.
     ///
     /// See the explanation in the [masking](https://github.com/linebender/vello/blob/main/vello_cpu/examples/masking.rs)
     /// example for how this method differs from `set_mask`.
@@ -684,8 +684,9 @@ impl RenderContext {
     }
 
     /// Set the mask to use for path-painting operations. The mask needs to
-    /// have the same dimensions as the render context. The mask will not be
-    /// affected by the current transform in place.
+    /// have the same dimensions as the render context, unless placed with
+    /// [`Mask::with_origin`]. The mask will not be affected by the current
+    /// transform in place.
     ///
     /// See the explanation in the [masking](https://github.com/linebender/vello/blob/main/vello_cpu/examples/masking.rs)
     /// example for how this method differs from `push_mask_layer`.

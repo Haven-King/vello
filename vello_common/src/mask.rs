@@ -15,10 +15,15 @@ struct MaskRepr {
 }
 
 // Note that we are on purpose storing width and height inside the `Arc`
-// to reduce the memory footprint of the struct.
+// to reduce the memory footprint of the struct. The origin stays outside,
+// so masks placed at different origins share their data.
 /// A mask.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mask(Arc<MaskRepr>);
+pub struct Mask {
+    repr: Arc<MaskRepr>,
+    /// Set by [`Mask::with_origin`].
+    origin: Option<(i32, i32)>,
+}
 
 impl Mask {
     /// Create a new alpha mask from the pixmap.
@@ -47,11 +52,14 @@ impl Mask {
             "`data` should have `width * height` length"
         );
 
-        Self(Arc::new(MaskRepr {
-            data,
-            width,
-            height,
-        }))
+        Self {
+            repr: Arc::new(MaskRepr {
+                data,
+                width,
+                height,
+            }),
+            origin: None,
+        }
     }
 
     fn new_with(pixmap: &Pixmap, alpha_mask: bool) -> Self {
@@ -80,23 +88,46 @@ impl Mask {
             })
             .collect::<Vec<u8>>();
 
-        Self(Arc::new(MaskRepr {
-            data,
-            width: pixmap.width(),
-            height: pixmap.height(),
-        }))
+        Self {
+            repr: Arc::new(MaskRepr {
+                data,
+                width: pixmap.width(),
+                height: pixmap.height(),
+            }),
+            origin: None,
+        }
+    }
+
+    /// Place the mask's top-left pixel at `(x, y)` in target pixels. A placed mask may have any
+    /// size, and may reach past the target's edges.
+    #[must_use]
+    pub fn with_origin(mut self, x: i32, y: i32) -> Self {
+        self.origin = Some((x, y));
+        self
+    }
+
+    /// Return the mask's origin, `(0, 0)` unless placed.
+    #[inline(always)]
+    pub fn origin(&self) -> (i32, i32) {
+        self.origin.unwrap_or((0, 0))
+    }
+
+    /// Whether the mask was placed.
+    #[inline(always)]
+    pub fn is_placed(&self) -> bool {
+        self.origin.is_some()
     }
 
     /// Return the width of the mask.
     #[inline(always)]
     pub fn width(&self) -> u16 {
-        self.0.width
+        self.repr.width
     }
 
     /// Return the height of the mask.
     #[inline(always)]
     pub fn height(&self) -> u16 {
-        self.0.height
+        self.repr.height
     }
 
     /// Sample the value at a specific location.
@@ -105,12 +136,26 @@ impl Mask {
     /// is out-of-bounds.
     #[inline(always)]
     pub fn sample(&self, x: u16, y: u16) -> u8 {
-        let repr = &*self.0;
+        let repr = &*self.repr;
         debug_assert!(
             x < repr.width && y < repr.height,
             "cannot sample mask outside of its range"
         );
 
         repr.data[y as usize * repr.width as usize + x as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn placed_masks_share_their_data() {
+        let mask = Mask::from_parts(vec![0; 4], 2, 2);
+        let placed = mask.clone().with_origin(3, -4);
+        assert!(Arc::ptr_eq(&mask.repr, &placed.repr));
+        assert_eq!((mask.origin(), placed.origin()), ((0, 0), (3, -4)));
     }
 }

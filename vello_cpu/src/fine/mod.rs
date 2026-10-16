@@ -551,6 +551,13 @@ pub struct Fine<S: Simd, T: FineKernel<S>> {
     origin: (u16, u16),
 }
 
+/// The target's top-left in `mask`'s own pixels.
+#[inline(always)]
+fn mask_offset<'a>(mask_origin: (i32, i32), mask: impl Into<Option<&'a Mask>>) -> (i32, i32) {
+    let (x, y) = mask.into().map_or((0, 0), Mask::origin);
+    (mask_origin.0 - x, mask_origin.1 - y)
+}
+
 impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
     /// Create a new fine rasterizer with the given SIMD context.
     ///
@@ -760,7 +767,10 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                         span,
                         attrs.blend_mode,
                         attrs.opacity,
-                        attrs.mask.as_ref().map(|mask| (mask, attrs.mask_origin)),
+                        attrs
+                            .mask
+                            .as_ref()
+                            .map(|mask| (mask, mask_offset(attrs.mask_origin, mask))),
                         alphas,
                     );
                 };
@@ -922,8 +932,8 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
         T::blend(
             simd,
             &mut scratch[Self::scratch_range(span)],
-            i32::from(x) + attrs.mask_origin.0,
-            i32::from(self.row_y) + attrs.mask_origin.1,
+            i32::from(x) + mask_offset(attrs.mask_origin, attrs.mask.as_ref()).0,
+            i32::from(self.row_y) + mask_offset(attrs.mask_origin, attrs.mask.as_ref()).1,
             iter::repeat(color),
             attrs.blend_mode,
             alphas,
@@ -993,8 +1003,8 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                         T::blend(
                             simd,
                             dest,
-                            i32::from(x) + attrs.mask_origin.0,
-                            i32::from(y) + attrs.mask_origin.1,
+                            i32::from(x) + mask_offset(attrs.mask_origin, attrs.mask.as_ref()).0,
+                            i32::from(y) + mask_offset(attrs.mask_origin, attrs.mask.as_ref()).1,
                             color_buf
                                 .chunks_exact(T::Composite::LENGTH)
                                 .map(|s| T::Composite::from_slice(simd, s)),

@@ -27,7 +27,7 @@ use vello_common::filter::FilterData;
 use vello_common::filter_effects::Filter;
 use vello_common::kurbo::{Affine, BezPath, Rect, Stroke};
 use vello_common::mask::Mask;
-use vello_common::paint::{ImageId, ImageResolver, Paint, PaintType, Tint};
+use vello_common::paint::{ImageId, ImageResolver, Magnification, Paint, PaintType, Tint};
 use vello_common::peniko::color::palette::css::BLACK;
 use vello_common::peniko::{BlendMode, Fill};
 use vello_common::pixmap::{Pixmap, PixmapMut};
@@ -257,7 +257,14 @@ impl RenderContext {
                 let transform = self
                     .root_transforms
                     .effective_paint_transform(self.transforms());
-                i.encode_into(&mut self.encoded_paints, transform, self.state.tint)
+                let paint = i.encode_into(&mut self.encoded_paints, transform, self.state.tint);
+                if self.state.magnification == Magnification::Crisp
+                    && let Some(Paint::Indexed(index)) = &paint
+                    && let EncodedPaint::Image(image) = &mut self.encoded_paints[index.index()]
+                {
+                    image.make_crisp();
+                }
+                paint
             }
         }
     }
@@ -647,6 +654,16 @@ impl RenderContext {
     /// Clear the tint, so subsequent image paints are drawn without tinting.
     pub fn reset_tint(&mut self) {
         self.state.tint = None;
+    }
+
+    /// Set how subsequent image paints are filtered where they are magnified.
+    pub fn set_image_magnification(&mut self, magnification: Magnification) {
+        self.state.magnification = magnification;
+    }
+
+    /// Get how image paints are filtered where they are magnified.
+    pub fn image_magnification(&self) -> Magnification {
+        self.state.magnification
     }
 
     /// Set the blend mode that should be used when drawing objects.

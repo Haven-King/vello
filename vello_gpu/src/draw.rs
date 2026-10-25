@@ -709,6 +709,7 @@ mod tests {
             x_advance: Vec2::new(1.0, 0.0),
             y_advance: Vec2::new(0.0, 1.0),
             tint: None,
+            crisp: None,
         })
     }
 
@@ -726,6 +727,7 @@ mod tests {
             x_advance: Vec2::new(1.0, 0.0),
             y_advance: Vec2::new(0.0, 1.0),
             tint: None,
+            crisp: None,
         })
     }
 

@@ -4,7 +4,7 @@
 //! Shared render state.
 
 use crate::kurbo::{Cap, Join, Stroke};
-use crate::paint::{PaintType, Tint};
+use crate::paint::{Magnification, PaintType, Tint};
 use crate::peniko::color::palette::css::BLACK;
 use crate::peniko::{BlendMode, Compose, Fill, Mix};
 use crate::transforms::Transforms;
@@ -22,6 +22,8 @@ pub struct RenderState {
     pub blend_mode: BlendMode,
     /// The tint for image painting.
     pub tint: Option<Tint>,
+    /// How image paints are filtered where they are magnified.
+    pub magnification: Magnification,
     /// State of active transforms.
     pub transforms: Transforms,
 }
@@ -40,6 +42,7 @@ impl Default for RenderState {
             fill_rule: Fill::NonZero,
             blend_mode: BlendMode::new(Mix::Normal, Compose::SrcOver),
             tint: None,
+            magnification: Magnification::Smooth,
             transforms: Transforms::default(),
         }
     }

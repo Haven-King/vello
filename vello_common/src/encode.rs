@@ -533,6 +533,7 @@ impl EncodeExt for Image {
             x_advance,
             y_advance,
             tint,
+            crisp: None,
         };
 
         paints.push(EncodedPaint::Image(encoded));
@@ -602,6 +603,22 @@ pub struct EncodedImage {
     pub y_advance: Vec2,
     /// Optional tint applied to the image.
     pub tint: Option<Tint>,
+    /// Under [`Magnification::Crisp`](crate::paint::Magnification::Crisp), the device pixels
+    /// a texel spans along the image's x and y axes, each at least 1; `None` for plain
+    /// bilinear interpolation.
+    pub crisp: Option<[f32; 2]>,
+}
+
+impl EncodedImage {
+    /// Sets [`Self::crisp`] from the advances, or clears it where the image is not magnified.
+    pub fn make_crisp(&mut self) {
+        // A device pixel moves a texel's x edge `hypot(du/dx, du/dy)` texels, its y edge
+        // `hypot(dv/dx, dv/dy)`.
+        let span = |a: f64, b: f64| (1.0 / a.hypot(b)).max(1.0) as f32;
+        let x = span(self.x_advance.x, self.y_advance.x);
+        let y = span(self.x_advance.y, self.y_advance.y);
+        self.crisp = (x > 1.0 || y > 1.0).then_some([x, y]);
+    }
 }
 
 /// Computed properties of a linear gradient.

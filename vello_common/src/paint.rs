@@ -302,6 +302,19 @@ pub struct Tint {
     pub mode: TintMode,
 }
 
+/// How an image paint is filtered where it is magnified, a texel larger than a device pixel.
+///
+/// Only bilinear sampling ([`peniko::ImageQuality::Medium`]) reads it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Magnification {
+    /// Bilinear interpolation between texel centres, so a magnified image looks soft.
+    #[default]
+    Smooth,
+    /// Each texel a square whose edges are antialiased over one device pixel, so a magnified
+    /// image keeps its pixels crisp. The same as `Smooth` where the image is not magnified.
+    Crisp,
+}
+
 /// A kind of paint that can be used for filling and stroking shapes.
 pub type PaintType = peniko::Brush<Image, Gradient>;
 

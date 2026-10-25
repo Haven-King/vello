@@ -147,6 +147,33 @@ impl<S: Simd> Iterator for NNImagePainter<'_, S> {
 
 u8x16_painter!(NNImagePainter<'_, S>);
 
+/// Steepens a bilinear weight for [`EncodedImage::crisp`]: `fract` runs from 0 at one texel's
+/// centre to 1 at the next one's, 0.5 at their shared edge, and `span` is the device pixels a
+/// texel spans, so the blend between two texels is held to the device pixel about their edge.
+#[inline(always)]
+pub(crate) fn crisp_weight<S: Simd>(simd: S, fract: f32x4<S>, span: f32) -> f32x4<S> {
+    ((fract - 0.5) * span + 0.5)
+        .max(f32x4::splat(simd, 0.0))
+        .min(f32x4::splat(simd, 1.0))
+}
+
+/// The x and y bilinear weights of [`EncodedImage::crisp`], left as they are without it.
+#[inline(always)]
+pub(crate) fn weights_of<S: Simd>(
+    simd: S,
+    image: &EncodedImage,
+    x_fract: f32x4<S>,
+    y_fract: f32x4<S>,
+) -> (f32x4<S>, f32x4<S>) {
+    match image.crisp {
+        Some([x, y]) => (
+            crisp_weight(simd, x_fract, x),
+            crisp_weight(simd, y_fract, y),
+        ),
+        None => (x_fract, y_fract),
+    }
+}
+
 /// A painter for images with bilinear or bicubic filtering.
 ///
 /// The painter is generic over sampler quality using the const-generic `QUALITY` parameter.
@@ -244,6 +271,7 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
             // medium quality: bilinear
             1 => {
                 // <https://github.com/google/skia/blob/220738774f7a0ce4a6c7bd17519a336e5e5dea5b/src/opts/SkRasterPipeline_opts.h#L5039-L5078>
+                let (x_fract, y_fract) = weights_of(self.simd, self.data.image, x_fract, y_fract);
                 let cx = [1.0 - x_fract, x_fract];
                 let cy = [1.0 - y_fract, y_fract];
 

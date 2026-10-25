@@ -575,6 +575,7 @@ impl CommandBucketer {
             x_advance: Vec2::new(1.0, 0.0),
             y_advance: Vec2::new(0.0, 1.0),
             tint: None,
+            crisp: None,
         }));
         let attrs_idx = self.paint_fill_attrs.len() as u32;
         self.paint_fill_attrs.push(PaintFillAttrs {

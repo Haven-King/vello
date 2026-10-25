@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::fine::PosExt;
-use crate::fine::common::image::{ImagePainterData, extend_mode, sample};
+use crate::fine::common::image::{ImagePainterData, crisp_weight, extend_mode, sample, weights_of};
 use crate::fine::macros::u8x16_painter;
 use vello_common::encode::EncodedImage;
 use vello_common::fearless_simd::{f32x4, prelude::*, u8x16, u16x16};
@@ -72,15 +72,15 @@ impl<S: Simd> Iterator for BilinearImagePainter<'_, S> {
         let y_shifted = y_positions + 0.5;
         let x_base = x_shifted.floor();
         let y_base = y_shifted.floor();
+        let (x_fract, y_fract) = weights_of(
+            self.simd,
+            self.data.image,
+            x_shifted - x_base,
+            y_shifted - y_base,
+        );
 
-        let fx = f32_to_u8(element_wise_splat(
-            self.simd,
-            (x_shifted - x_base).mul_add(255.0, 0.5),
-        ));
-        let fy = f32_to_u8(element_wise_splat(
-            self.simd,
-            (y_shifted - y_base).mul_add(255.0, 0.5),
-        ));
+        let fx = f32_to_u8(element_wise_splat(self.simd, x_fract.mul_add(255.0, 0.5)));
+        let fy = f32_to_u8(element_wise_splat(self.simd, y_fract.mul_add(255.0, 0.5)));
 
         let fx = widen(fx);
         let fy = widen(fy);
@@ -166,10 +166,11 @@ impl<'a, S: Simd> PlainBilinearImagePainter<'a, S> {
                     extend_mode(y_base, image.sampler.y_extend, data.height, data.height_inv);
 
                 // Pre-compute y interpolation weights
-                let fy = f32_to_u8(element_wise_splat(
-                    simd,
-                    (y_shifted - y_base).mul_add(255.0, 0.5),
-                ));
+                let mut y_fract = y_shifted - y_base;
+                if let Some([_, span]) = image.crisp {
+                    y_fract = crisp_weight(simd, y_fract, span);
+                }
+                let fy = f32_to_u8(element_wise_splat(simd, y_fract.mul_add(255.0, 0.5)));
                 let fy = widen(fy);
                 let fy_inv = u16x16::splat(simd, 255) - fy;
 
@@ -218,10 +219,11 @@ impl<S: Simd> Iterator for PlainBilinearImagePainter<'_, S> {
         );
 
         // Compute x interpolation weights
-        let fx = f32_to_u8(element_wise_splat(
-            self.simd,
-            (x_shifted - x_base).mul_add(255.0, 0.5),
-        ));
+        let mut x_fract = x_shifted - x_base;
+        if let Some([span, _]) = self.data.image.crisp {
+            x_fract = crisp_weight(self.simd, x_fract, span);
+        }
+        let fx = f32_to_u8(element_wise_splat(self.simd, x_fract.mul_add(255.0, 0.5)));
         let fx = widen(fx);
         let fx_inv = u16x16::splat(self.simd, 255) - fx;
 

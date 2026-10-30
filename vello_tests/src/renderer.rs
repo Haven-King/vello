@@ -10,7 +10,7 @@ use vello_common::color::{AlphaColor, Srgb};
 use vello_common::filter_effects::Filter;
 use vello_common::kurbo::{Affine, BezPath, Rect, Stroke};
 use vello_common::mask::Mask;
-use vello_common::paint::{ImageId, ImageSource, PaintType, Tint};
+use vello_common::paint::{ImageId, ImageSource, Magnification, PaintType, Tint};
 use vello_common::peniko::{BlendMode, Fill, FontData};
 use vello_common::pixmap::Pixmap;
 use vello_cpu::{
@@ -81,6 +81,7 @@ pub trait Renderer: Sized {
     fn set_mask(&mut self, mask: Mask);
     fn set_paint(&mut self, paint: impl Into<PaintType>);
     fn set_tint(&mut self, tint: Option<Tint>);
+    fn set_image_magnification(&mut self, magnification: Magnification);
     fn set_paint_transform(&mut self, affine: Affine);
     fn set_fill_rule(&mut self, fill_rule: Fill);
     fn set_transform(&mut self, transform: Affine);
@@ -219,6 +220,10 @@ impl Renderer for CpuRenderer {
 
     fn set_tint(&mut self, tint: Option<Tint>) {
         self.ctx.set_tint(tint);
+    }
+
+    fn set_image_magnification(&mut self, magnification: Magnification) {
+        self.ctx.set_image_magnification(magnification);
     }
 
     fn set_paint_transform(&mut self, affine: Affine) {
@@ -558,6 +563,10 @@ impl Renderer for GpuRenderer {
 
     fn set_tint(&mut self, tint: Option<Tint>) {
         self.scene.set_tint(tint);
+    }
+
+    fn set_image_magnification(&mut self, magnification: Magnification) {
+        self.scene.set_image_magnification(magnification);
     }
 
     fn set_paint_transform(&mut self, affine: Affine) {
@@ -950,6 +959,10 @@ impl Renderer for GpuRenderer {
 
     fn set_tint(&mut self, tint: Option<Tint>) {
         self.scene.set_tint(tint);
+    }
+
+    fn set_image_magnification(&mut self, magnification: Magnification) {
+        self.scene.set_image_magnification(magnification);
     }
 
     fn set_paint_transform(&mut self, affine: Affine) {

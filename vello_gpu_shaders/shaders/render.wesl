@@ -41,6 +41,8 @@ import package::helpers::gradient::{
 import package::helpers::geometry::{pixel_to_ndc, quad_corner};
 import package::helpers::image::{
     TINT_MODE_MULTIPLY,
+    get_image_crisp,
+    get_image_crisp_span,
     get_image_extend_modes,
     get_image_offset,
     get_image_quality,
@@ -392,6 +394,11 @@ fn fs_main(
             let packed_tint = image_texel2.y;
             let image_tint = unpack4x8unorm(packed_tint);
             let is_multiply = image_texel2.z == TINT_MODE_MULTIPLY;
+            var crisp_span = vec2<f32>(1.0);
+            if get_image_crisp(image_texel0) {
+                let image_texel1 = load_encoded_paint_texel(paint_tex_idx, 1u);
+                crisp_span = get_image_crisp_span(get_image_transform(image_texel0, image_texel1));
+            }
             let extended_xy = vec2<f32>(
                 extend_mode(sample_xy.x, image_extend_modes.x, image_size.x),
                 extend_mode(sample_xy.y, image_extend_modes.y, image_size.y)
@@ -407,6 +414,7 @@ fn fs_main(
                 final_xy,
                 image_offset,
                 image_size,
+                crisp_span,
             );
 
             final_color = alpha * select(

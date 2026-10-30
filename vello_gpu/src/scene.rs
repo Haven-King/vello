@@ -21,7 +21,7 @@ use vello_common::geometry::{RectU16, SizeU16};
 use vello_common::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use vello_common::mask::Mask;
 use vello_common::multi_atlas::AtlasConfig;
-use vello_common::paint::{Paint, PaintType, PremulColor, Tint};
+use vello_common::paint::{Magnification, Paint, PaintType, PremulColor, Tint};
 #[cfg(feature = "text")]
 use vello_common::peniko::FontData;
 use vello_common::peniko::color::palette::css::BLACK;
@@ -298,7 +298,15 @@ impl Scene {
             PaintType::Solid(s) => Some(Paint::Solid(PremulColor::from_alpha_color(*s))),
             PaintType::Gradient(g) => g.encode_into(&mut self.encoded_paints, transform, None),
             PaintType::Image(i) => {
-                i.encode_into(&mut self.encoded_paints, transform, self.render_state.tint)
+                let paint =
+                    i.encode_into(&mut self.encoded_paints, transform, self.render_state.tint);
+                if self.render_state.magnification == Magnification::Crisp
+                    && let Some(Paint::Indexed(index)) = &paint
+                    && let EncodedPaint::Image(image) = &mut self.encoded_paints[index.index()]
+                {
+                    image.make_crisp();
+                }
+                paint
             }
         }
     }
@@ -782,6 +790,16 @@ impl Scene {
     /// Clear the tint, so subsequent image paints are drawn without tinting.
     pub fn reset_tint(&mut self) {
         self.render_state.tint = None;
+    }
+
+    /// Set how subsequent image paints are filtered where they are magnified.
+    pub fn set_image_magnification(&mut self, magnification: Magnification) {
+        self.render_state.magnification = magnification;
+    }
+
+    /// Get how image paints are filtered where they are magnified.
+    pub fn image_magnification(&self) -> Magnification {
+        self.render_state.magnification
     }
 
     /// Get the current paint.

@@ -11,16 +11,21 @@ import package::helpers::image::{
 
 // This is the same as `helpers::image::bilinear_sample`, but for a 2D texture
 // instead of an atlas texture array.
+//
+// The weights are steepened by `crisp_span`, the device pixels a texel spans, so the blend
+// between two texels is held to the device pixel about their shared edge. A span of 1 leaves
+// plain bilinear weights.
 fn external_bilinear_sample(
     external_texture: texture_2d<f32>,
     coords: vec2<f32>,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
+    crisp_span: vec2<f32>,
 ) -> vec4<f32> {
     let image_max = image_offset + image_size - vec2(1.0);
     let clamped_coords = clamp(coords, image_offset, image_max);
     let coord_quad = vec4(floor(clamped_coords), ceil(clamped_coords));
-    let coord_frac = fract(coords);
+    let coord_frac = clamp((fract(coords) - vec2(0.5)) * crisp_span + vec2(0.5), vec2(0.0), vec2(1.0));
     let a = textureLoad(external_texture, vec2<i32>(coord_quad.xy), 0);
     let b = textureLoad(external_texture, vec2<i32>(coord_quad.xw), 0);
     let c = textureLoad(external_texture, vec2<i32>(coord_quad.zy), 0);
@@ -78,6 +83,7 @@ fn sample_external_image(
     coords: vec2<f32>,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
+    crisp_span: vec2<f32>,
 ) -> vec4<f32> {
     if quality == IMAGE_QUALITY_HIGH {
         return external_bicubic_sample(external_texture, coords, image_offset, image_size);
@@ -88,6 +94,7 @@ fn sample_external_image(
             coords - vec2(0.5),
             image_offset,
             image_size,
+            crisp_span,
         );
     }
     return textureLoad(external_texture, vec2<u32>(coords), 0);

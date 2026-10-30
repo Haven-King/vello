@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::renderer::Renderer;
+use crate::util::crossed_line_star;
 use smallvec::smallvec;
 use vello_common::color::DynamicColor;
-use vello_common::color::palette::css::{BLACK, LIME, RED, YELLOW};
+use vello_common::color::palette::css::{BLACK, BLUE, LIME, RED, ROYAL_BLUE, TOMATO, YELLOW};
+use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_common::kurbo::{Point, Rect};
 use vello_common::mask::Mask;
-use vello_common::peniko::{ColorStop, ColorStops, Gradient};
+use vello_common::peniko::{BlendMode, ColorStop, ColorStops, Compose, Gradient, Mix};
 use vello_cpu::peniko::LinearGradientPosition;
 use vello_cpu::{Level, RenderSettings};
 use vello_cpu::{Pixmap, RenderContext};
@@ -76,6 +78,84 @@ fn mask_alpha(ctx: &mut impl Renderer) {
 #[vello_test]
 fn mask_luminance(ctx: &mut impl Renderer) {
     mask(ctx, false);
+}
+
+#[vello_test]
+fn mask_with_blend(ctx: &mut impl Renderer) {
+    ctx.set_paint(BLUE);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
+    ctx.push_layer(
+        None,
+        Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)),
+        None,
+        Some(example_mask(false)),
+        None,
+    );
+    ctx.set_paint(YELLOW);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
+    ctx.pop_layer();
+}
+
+#[vello_test]
+fn mask_nested(ctx: &mut impl Renderer) {
+    ctx.set_paint(BLACK);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
+    ctx.push_opacity_layer(0.8);
+    ctx.push_mask_layer(example_mask(true));
+    ctx.push_clip_layer(&crossed_line_star());
+    ctx.push_mask_layer(example_mask(false));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
+    ctx.pop_layer();
+    ctx.pop_layer();
+    ctx.pop_layer();
+    ctx.pop_layer();
+}
+
+#[vello_test]
+fn mask_siblings(ctx: &mut impl Renderer) {
+    let alpha = example_mask(true);
+    let luminance = example_mask(false);
+
+    // The first and last layers share their mask.
+    for (mask, y, color) in [
+        (&alpha, 10.0, RED),
+        (&luminance, 40.0, LIME),
+        (&alpha, 70.0, BLUE),
+    ] {
+        ctx.push_mask_layer(mask.clone());
+        ctx.set_paint(color);
+        ctx.fill_rect(&Rect::new(0.0, y, 100.0, y + 25.0));
+        ctx.pop_layer();
+    }
+}
+
+#[vello_test(skip_multithreaded, gpu_tolerance = 2)]
+fn mask_on_filter_layer(ctx: &mut impl Renderer) {
+    ctx.push_layer(
+        None,
+        None,
+        None,
+        Some(example_mask(true)),
+        Some(Filter::from_primitive(FilterPrimitive::DropShadow {
+            dx: 8.0,
+            dy: 8.0,
+            std_deviation: 2.0,
+            color: TOMATO,
+            edge_mode: EdgeMode::None,
+        })),
+    );
+    ctx.set_paint(ROYAL_BLUE);
+    ctx.fill_rect(&Rect::new(15.0, 15.0, 70.0, 70.0));
+    ctx.pop_layer();
+}
+
+#[vello_test]
+fn mask_wrong_size_is_ignored(ctx: &mut impl Renderer) {
+    ctx.push_mask_layer(Mask::from_parts(vec![0; 50 * 50], 50, 50));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
+    ctx.pop_layer();
 }
 
 #[vello_test(skip_gpu)]

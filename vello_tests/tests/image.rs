@@ -371,7 +371,8 @@ fn image_with_anti_aliasing(ctx: &mut impl Renderer) {
     ctx.fill_rect(&rect);
 }
 
-#[vello_test]
+// `vello_gpu` doesn't support non-isolated masks.
+#[vello_test(skip_gpu)]
 fn image_opaque_with_mask(ctx: &mut impl Renderer) {
     let rect = Rect::new(10.0, 10.0, 90.0, 90.0);
     let image = Image {

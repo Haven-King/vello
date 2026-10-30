@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use vello_common::filter_effects::Filter;
 use vello_common::geometry::{RectU16, SizeU16};
 use vello_common::kurbo::{Rect, Shape};
+use vello_common::mask::Mask;
 use vello_common::peniko::BlendMode;
 use vello_common::peniko::color::palette::css::BLUE;
 
@@ -38,6 +39,16 @@ impl SceneCase {
 
     pub(super) fn layer(&mut self, f: impl FnOnce(&mut Self)) {
         self.layer_with(None, None, None, f);
+    }
+
+    /// Push a layer masked by a mask covering the whole scene.
+    pub(super) fn mask_layer(&mut self, f: impl FnOnce(&mut Self)) {
+        let (width, height) = (self.scene.width(), self.scene.height());
+        let data = vec![128; usize::from(width) * usize::from(height)];
+        self.scene
+            .push_mask_layer(Mask::from_parts(data, width, height));
+        f(self);
+        self.scene.pop_layer();
     }
 
     pub(super) fn layer_with(

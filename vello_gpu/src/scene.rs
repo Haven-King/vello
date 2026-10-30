@@ -638,9 +638,9 @@ impl Scene {
 
     /// Push a new layer with the given properties.
     ///
-    /// # Panics
-    ///
-    /// Panics if `mask` is provided because mask layers are not yet supported.
+    /// Note that the mask, if provided, needs to have the same size as the scene, unless placed
+    /// with [`Mask::with_origin`]. Otherwise, it will be ignored. In addition to that, the mask
+    /// will not be affected by the current transformation matrix in place.
     pub fn push_layer(
         &mut self,
         clip_path: Option<&BezPath>,
@@ -649,9 +649,10 @@ impl Scene {
         mask: Option<Mask>,
         filter: Option<Filter>,
     ) {
-        if mask.is_some() {
-            unimplemented!("mask layers are currently not supported");
-        }
+        // Same as Vello CPU, which ignores unplaced masks that don't match the size of its render
+        // context.
+        let mask = mask
+            .filter(|m| m.is_placed() || (m.width() == self.width && m.height() == self.height));
 
         let blend_mode = blend_mode.unwrap_or_default();
         let layer_transform = self.effective_path_transform();
@@ -696,7 +697,7 @@ impl Scene {
             LayerProps {
                 blend_mode,
                 opacity: opacity.unwrap_or(1.0),
-                mask: None,
+                mask,
                 clip_path,
             },
             filter_data,
@@ -721,11 +722,9 @@ impl Scene {
         self.push_layer(None, None, Some(opacity), None, None);
     }
 
-    /// Push a new mask layer.
-    ///
-    /// # Panics
-    ///
-    /// This method currently always panics since masks are not supported yet.
+    /// Push a new mask layer. The mask needs to have the same dimensions as the scene, unless
+    /// placed with [`Mask::with_origin`]. The mask will not be affected by the current transform
+    /// in place.
     pub fn push_mask_layer(&mut self, mask: Mask) {
         self.push_layer(None, None, None, Some(mask), None);
     }

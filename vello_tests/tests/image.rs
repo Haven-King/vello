@@ -9,9 +9,9 @@ use crate::util::crossed_line_star;
 use std::f64::consts::PI;
 use std::sync::Arc;
 use vello_common::color::palette::css::REBECCA_PURPLE;
-use vello_common::kurbo::{Affine, Point, Rect};
+use vello_common::kurbo::{Affine, Circle, Point, Rect};
 use vello_common::kurbo::{Shape, Triangle};
-use vello_common::paint::{Image, ImageSource, Tint, TintMode};
+use vello_common::paint::{Image, ImageSource, Magnification, Tint, TintMode};
 use vello_common::peniko::Color;
 use vello_common::peniko::ImageSampler;
 use vello_common::peniko::{BlendMode, Compose, Extend, ImageQuality, Mix};
@@ -540,6 +540,87 @@ fn image_bilinear_10x_scale_2(ctx: &mut impl Renderer) {
         image_source,
         ImageQuality::Medium,
         Extend::Reflect,
+    );
+}
+
+// Crisp magnification draws each magnified texel as a square with a one pixel antialiased edge,
+// and leaves an image that isn't magnified as plain bilinear.
+
+fn crisp(ctx: &mut impl Renderer, transform: Affine, image_source: ImageSource) {
+    ctx.set_image_magnification(Magnification::Crisp);
+    quality(
+        ctx,
+        transform,
+        image_source,
+        ImageQuality::Medium,
+        Extend::Reflect,
+    );
+}
+
+#[vello_test]
+fn image_bilinear_crisp_10x_scale(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_2x3(ctx);
+    crisp(ctx, Affine::scale(10.0), image_source);
+}
+
+#[vello_test]
+fn image_bilinear_crisp_fractional_scale(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_2x3(ctx);
+    crisp(
+        ctx,
+        Affine::translate((0.3, 0.6)) * Affine::scale(7.4),
+        image_source,
+    );
+}
+
+#[vello_test]
+fn image_bilinear_crisp_with_rotation(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_2x2(ctx);
+    crisp(
+        ctx,
+        Affine::scale(5.0) * Affine::rotate(45.0_f64.to_radians()),
+        image_source,
+    );
+}
+
+#[vello_test]
+fn image_bilinear_crisp_non_uniform_scale(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_10x10(ctx);
+    crisp(ctx, Affine::scale_non_uniform(6.0, 0.6), image_source);
+}
+
+// The same image as `image_bilinear_crisp_10x_scale`, drawn through strips under a clip rather
+// than as a rectangle.
+#[vello_test]
+fn image_bilinear_crisp_10x_scale_clipped(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_2x3(ctx);
+    ctx.push_clip_layer(&Circle::new((50.0, 50.0), 38.0).to_path(0.1));
+    crisp(ctx, Affine::scale(10.0), image_source);
+    ctx.pop_layer();
+}
+
+#[vello_test]
+fn image_bilinear_minified(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_10x10(ctx);
+    quality(
+        ctx,
+        Affine::scale(0.7),
+        image_source,
+        ImageQuality::Medium,
+        Extend::Repeat,
+    );
+}
+
+#[vello_test]
+fn image_bilinear_crisp_minified(ctx: &mut impl Renderer) {
+    let image_source = rgb_img_10x10(ctx);
+    ctx.set_image_magnification(Magnification::Crisp);
+    quality(
+        ctx,
+        Affine::scale(0.7),
+        image_source,
+        ImageQuality::Medium,
+        Extend::Repeat,
     );
 }
 

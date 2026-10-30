@@ -522,7 +522,8 @@ impl GpuEncodedPaint {
 #[derive(Debug, Clone, Copy, Zeroable, Pod)]
 #[allow(dead_code, reason = "Clippy fails when --no-default-features")]
 pub(crate) struct GpuEncodedImage {
-    /// Packed rendering quality and extend modes.
+    /// Packed rendering quality, extend modes and crisp magnification.
+    /// Bit 6: crisp (1 bit)
     /// Bits 4-5: `extend_y` (2 bits)
     /// Bits 2-3: `extend_x` (2 bits)  
     /// Bits 0-1: `quality` (2 bits)
@@ -670,16 +671,17 @@ pub(crate) fn pack_image_offset(x: u16, y: u16) -> u32 {
     ((x as u32) << 16) | (y as u32)
 }
 
-/// Pack image `quality` and extend modes into a single u32.
+/// Pack image `quality`, extend modes and crisp magnification into a single u32.
+/// `crisp`: stored in bit 6
 /// `extend_y`: stored in bits 4-5 (2 bits)
 /// `extend_x`: stored in bits 2-3 (2 bits)
 /// `quality`: stored in bits 0-1 (2 bits)
 #[inline(always)]
-pub(crate) fn pack_image_params(quality: u32, extend_x: u32, extend_y: u32) -> u32 {
+pub(crate) fn pack_image_params(quality: u32, extend_x: u32, extend_y: u32, crisp: bool) -> u32 {
     debug_assert!(extend_x <= 3, "extend_x must be 0-3 (2 bits)");
     debug_assert!(extend_y <= 3, "extend_y must be 0-3 (2 bits)");
     debug_assert!(quality <= 3, "quality must be 0-3 (2 bits)");
-    (extend_y << 4) | (extend_x << 2) | quality
+    (u32::from(crisp) << 6) | (extend_y << 4) | (extend_x << 2) | quality
 }
 
 /// Pack an optional [`Tint`](vello_common::paint::Tint) into a (`tint_color_u32`, `tint_mode_u32`) pair for the GPU.

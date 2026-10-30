@@ -932,6 +932,7 @@ impl WebGlRenderer {
             image.sampler.quality as u32,
             image.sampler.x_extend as u32,
             image.sampler.y_extend as u32,
+            image.crisp.is_some(),
         );
         let (tint, tint_mode) = pack_tint(image.tint);
 
@@ -957,6 +958,7 @@ impl WebGlRenderer {
             image.sampler.quality as u32,
             image.sampler.x_extend as u32,
             image.sampler.y_extend as u32,
+            image.crisp.is_some(),
         );
         let (tint, tint_mode) = pack_tint(image.tint);
 

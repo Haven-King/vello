@@ -18,6 +18,7 @@ const TINT_MODE_MULTIPLY: u32 = 1u;
 //   bits 0-1: quality
 //   bits 2-3: extend_x
 //   bits 4-5: extend_y
+//   bit 6: crisp magnification
 // texel0.y: image_size, packed as [width:16, height:16]
 // texel0.z: image_offset, packed as [x:16, y:16]
 // texel0.w/texel1.x/texel1.y/texel1.z: transform matrix [a, b, c, d]
@@ -32,6 +33,20 @@ fn get_image_quality(texel0: vec4<u32>) -> u32 { return texel0.x & 0x3u; }
 /// The extend modes in the horizontal and vertical direction.
 fn get_image_extend_modes(texel0: vec4<u32>) -> vec2<u32> {
     return vec2<u32>((texel0.x >> 2u) & 0x3u, (texel0.x >> 4u) & 0x3u);
+}
+
+/// Whether bilinear sampling is steepened so magnified texels stay crisp.
+fn get_image_crisp(texel0: vec4<u32>) -> bool { return (texel0.x & 0x40u) != 0u; }
+
+/// The device pixels a texel spans along the image's x and y axes, each at least 1, as in
+/// `EncodedImage::make_crisp`. A device pixel moves a texel's x edge by the length of the
+/// view-to-image transform's first row, and its y edge by the second.
+fn get_image_crisp_span(transform: mat2x2<f32>) -> vec2<f32> {
+    let texels = vec2<f32>(
+        length(vec2<f32>(transform[0].x, transform[1].x)),
+        length(vec2<f32>(transform[0].y, transform[1].y))
+    );
+    return max(vec2<f32>(1.0) / texels, vec2<f32>(1.0));
 }
 
 /// The size of the image in pixels.

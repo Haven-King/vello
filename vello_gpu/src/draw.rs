@@ -578,6 +578,7 @@ mod tests {
     use super::{Draw, DrawBuffers, DrawBuilder, DrawState, ExternalTextureRun, OpaqueDraw};
     use crate::GpuStrip;
     use crate::paint::{EXTERNAL_TEXTURE_SLOT_SHIFT, PaintResolver, TextureSourceId};
+    use crate::resources::PixmapImages;
     use crate::scene::{RecordedDraw, RecordedRect};
     use crate::target::{
         DrawTarget, LayerTextureId, LayerTextureRegion, RootTarget, TextureParity, TextureRegion,
@@ -830,8 +831,10 @@ mod tests {
         let [texture] = texture_ids();
         let mut image_cache = ImageCache::new_with_config(AtlasConfig::default());
         let image_id = image_cache.allocate(1, 1, 0).unwrap();
+        let pixmap_images = PixmapImages::default();
         let encoded = [external(texture), atlas_image(image_id)];
-        let resolver = PaintResolver::new(&encoded, &[0, 0]).with_image_cache(&image_cache);
+        let resolver =
+            PaintResolver::new(&encoded, &[0, 0]).with_image_cache(&image_cache, &pixmap_images);
         let mut case = DrawCase::new(RootTarget::UserSurface, RectU16::new(0, 0, 16, 8));
         let mut draw = Draw::default();
 

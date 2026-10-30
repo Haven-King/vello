@@ -44,6 +44,7 @@ mod gradient;
 mod image;
 #[cfg(all(target_arch = "wasm32", feature = "webgl"))]
 mod image_atlas;
+mod image_pixmap;
 mod issues;
 mod layer;
 mod mask;

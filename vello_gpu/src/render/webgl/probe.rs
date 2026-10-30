@@ -6,6 +6,7 @@ use crate::render::webgl::{
     ViewFramebuffer, WebGlOperation, WebGlProbeOperation, WebGlResultExt, WebGlTextureBindings,
     create_framebuffer_for_texture, create_texture_storage,
 };
+use crate::resources::PixmapImages;
 use crate::target::RootTarget;
 use crate::{ClearSettings, RenderError, RenderSize, Scene, TargetInit, WebGlError, WebGlRenderer};
 use alloc::{borrow::Cow, format, vec::Vec};
@@ -168,6 +169,7 @@ impl WebGlRenderer {
         let render_result = self.render_scene(
             &scene,
             &ImageCache::new_dummy(),
+            &PixmapImages::default(),
             &render_size,
             TargetInit::Clear(ClearSettings::Viewport { color: css::WHITE }),
             RootTarget::UserSurface,

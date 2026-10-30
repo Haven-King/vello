@@ -3,6 +3,7 @@
 
 //! GPU paint packing for scheduled strip draws.
 
+use crate::resources::PixmapImages;
 use crate::util::pack_u16_pair;
 use vello_common::TextureId;
 use vello_common::encode::{EncodedKind, EncodedPaint};
@@ -75,6 +76,8 @@ pub(crate) struct PaintResolver<'a> {
     gpu_offsets: &'a [u32],
     /// Resolves internal images to their atlas textures.
     image_cache: Option<&'a ImageCache>,
+    /// Resolves pixmap images to their atlas images.
+    pixmap_images: Option<&'a PixmapImages>,
 }
 
 impl<'a> PaintResolver<'a> {
@@ -83,12 +86,18 @@ impl<'a> PaintResolver<'a> {
             encoded,
             gpu_offsets,
             image_cache: None,
+            pixmap_images: None,
         }
     }
 
-    /// Add the image cache needed to resolve internal image paints.
-    pub(crate) fn with_image_cache(mut self, image_cache: &'a ImageCache) -> Self {
+    /// Add the image cache and pixmap images needed to resolve atlas image paints.
+    pub(crate) fn with_image_cache(
+        mut self,
+        image_cache: &'a ImageCache,
+        pixmap_images: &'a PixmapImages,
+    ) -> Self {
         self.image_cache = Some(image_cache);
+        self.pixmap_images = Some(pixmap_images);
         self
     }
 
@@ -119,7 +128,14 @@ impl<'a> PaintResolver<'a> {
                                 Some(TextureSourceId::Atlas(image_resource.atlas_id)),
                             )
                         }
-                        ImageSource::Pixmap(_) => unimplemented!("Unsupported image source"),
+                        ImageSource::Pixmap(pixmap) => {
+                            let image_id = self.pixmap_images.unwrap().get(pixmap).unwrap();
+                            let image_resource = self.image_cache.unwrap().get(image_id).unwrap();
+                            (
+                                PAINT_TYPE_IMAGE,
+                                Some(TextureSourceId::Atlas(image_resource.atlas_id)),
+                            )
+                        }
                     },
                     EncodedPaint::Gradient(gradient) => {
                         let paint_type = match &gradient.kind {

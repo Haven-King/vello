@@ -30,6 +30,7 @@ use crate::{
             pack_radial_kind_and_swapped, pack_texture_width_and_extend_mode, pack_tint,
         },
     },
+    resources::PixmapImages,
     scene::Scene,
     schedule::{
         Backend, IntermediateTextureAllocations, Schedule, ScheduleStorage,
@@ -155,7 +156,7 @@ pub struct Renderer {
     schedule_storage: ScheduleStorage,
     scratch_buffers: ScratchBuffers,
     layers_config: LayersConfig,
-    #[cfg(feature = "text")]
+    /// Zeroed staging data for clearing atlas regions.
     atlas_clear_scratch: Vec<u8>,
 }
 
@@ -204,7 +205,6 @@ impl Renderer {
             schedule_storage: ScheduleStorage::default(),
             scratch_buffers: ScratchBuffers::default(),
             layers_config: layer_config,
-            #[cfg(feature = "text")]
             atlas_clear_scratch: Vec::new(),
         };
 
@@ -252,6 +252,11 @@ impl Renderer {
     /// The [WebGPU render pass validation rules] require every color and depth attachment view in
     /// a render pass to have matching render extents.
     ///
+    /// Image paints whose source is an `ImageSource::Pixmap` are uploaded into the image atlas
+    /// the first time a render draws them, keyed by the identity of their `Arc`. A pixmap's
+    /// region is freed at the start of a render whose scene doesn't draw it, when the previous
+    /// render didn't draw it either.
+    ///
     /// [WebGPU render pass validation rules]: https://gpuweb.github.io/gpuweb/#abstract-opdef-gpurenderpassdescriptor-valid-usage
     pub fn render(
         &mut self,
@@ -266,6 +271,28 @@ impl Renderer {
         texture_bindings: &TextureBindings,
         target_init: TargetInit<'_>,
     ) -> Result<(), RenderError> {
+        resources.pixmap_images.prepare(
+            &mut resources.image_cache,
+            &scene.encoded_paints,
+            self,
+            |renderer, atlas_id, region| {
+                renderer.zero_atlas_region(queue, atlas_id, region);
+                Ok::<(), RenderError>(())
+            },
+            |renderer, image_cache, image_id, pixmap| {
+                renderer.write_to_atlas(
+                    image_cache,
+                    device,
+                    queue,
+                    encoder,
+                    image_id,
+                    pixmap,
+                    None,
+                );
+                Ok(())
+            },
+        )?;
+
         #[cfg(feature = "text")]
         {
             resources.before_render(
@@ -306,6 +333,7 @@ impl Renderer {
             view,
             depth_view,
             &resources.image_cache,
+            &resources.pixmap_images,
             &scene.encoded_paints,
             target_init,
             RootTarget::UserSurface,
@@ -379,6 +407,7 @@ impl Renderer {
             &layer_view,
             None,
             &dummy_image_cache,
+            &PixmapImages::default(),
             encoded_paints,
             TargetInit::SrcOver,
             RootTarget::AtlasLayer,
@@ -417,6 +446,7 @@ impl Renderer {
         view: &TextureView,
         depth_view: Option<&TextureView>,
         image_cache: &ImageCache,
+        pixmap_images: &PixmapImages,
         encoded_paints: &[EncodedPaint],
         target_init: TargetInit<'_>,
         root_output_target: RootTarget,
@@ -426,6 +456,7 @@ impl Renderer {
         self.prepare_gpu_encoded_paints(
             encoded_paints,
             image_cache,
+            pixmap_images,
             texture_bindings,
             view.texture(),
         )?;
@@ -441,8 +472,8 @@ impl Renderer {
             .texture_size
             .max(required_texture_size);
         let current_allocations = self.current_allocations();
-        let paint_resolver =
-            PaintResolver::new(encoded_paints, &self.paint_idxs).with_image_cache(image_cache);
+        let paint_resolver = PaintResolver::new(encoded_paints, &self.paint_idxs)
+            .with_image_cache(image_cache, pixmap_images);
         let schedule = Schedule::try_new(
             &mut self.schedule_storage,
             scene,
@@ -670,10 +701,68 @@ impl Renderer {
         render_pass.draw(0..4, 0..1);
     }
 
+    /// Clears a region of an atlas texture to transparent.
+    ///
+    /// Uses `queue.write_texture`, so the clear runs before the command buffers of the next
+    /// submission and in order with uploads through the queue.
+    fn zero_atlas_region(&mut self, queue: &Queue, atlas_id: AtlasId, region: RectU16) {
+        /// Caps the zeroed staging data, so clearing a large region doesn't pin a buffer of its
+        /// size.
+        const MAX_CHUNK_BYTES: u32 = 1 << 20;
+
+        let Some(texture) = self
+            .programs
+            .resources
+            .atlas_textures
+            .get(atlas_id.as_u32() as usize)
+        else {
+            // Not created yet, and textures are created zeroed.
+            return;
+        };
+        if region.is_empty() {
+            return;
+        }
+        // TODO: Can we optimize this more?
+        let bytes_per_row = u32::from(region.width()) * 4;
+        let chunk_rows = (MAX_CHUNK_BYTES / bytes_per_row).clamp(1, u32::from(region.height()));
+        let chunk_bytes = (chunk_rows * bytes_per_row) as usize;
+        if self.atlas_clear_scratch.len() < chunk_bytes {
+            self.atlas_clear_scratch.resize(chunk_bytes, 0);
+        }
+
+        for y in (u32::from(region.y0)..u32::from(region.y1)).step_by(chunk_rows as usize) {
+            let rows = chunk_rows.min(u32::from(region.y1) - y);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: u32::from(region.x0),
+                        y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &self.atlas_clear_scratch[..(rows * bytes_per_row) as usize],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+                Extent3d {
+                    width: u32::from(region.width()),
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+
     fn prepare_gpu_encoded_paints(
         &mut self,
         encoded_paints: &[EncodedPaint],
         image_cache: &ImageCache,
+        pixmap_images: &PixmapImages,
         texture_bindings: &TextureBindings,
         render_target_texture: &Texture,
     ) -> Result<(), RenderError> {
@@ -702,8 +791,13 @@ impl Renderer {
                         }
                         self.encode_external_texture_paint(img, *source_region)
                     }
-                    ImageSource::Pixmap(_) => {
-                        panic!("pixmap image sources are not supported by Vello GPU")
+                    ImageSource::Pixmap(pixmap) => {
+                        let id = pixmap_images
+                            .get(pixmap)
+                            .ok_or(RenderError::UnsupportedPixmapImage)?;
+                        let image_resource =
+                            image_cache.get(id).ok_or(RenderError::MissingImage(id))?;
+                        self.encode_image_paint(img, image_resource)
                     }
                 },
                 EncodedPaint::Gradient(gradient) => {
@@ -868,31 +962,10 @@ impl Renderer {
 
 #[cfg(feature = "text")]
 fn clear_atlas_region(queue: &Queue, renderer: &mut Renderer, rect: &PendingClearRect) {
-    // TODO: Can we optimize this more?
-    let byte_count = rect.width as usize * rect.height as usize * 4;
-    renderer.atlas_clear_scratch.resize(byte_count, 0);
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: renderer.atlas_texture(AtlasId::new(rect.page_index)),
-            mip_level: 0,
-            origin: wgpu::Origin3d {
-                x: rect.x as u32,
-                y: rect.y as u32,
-                z: 0,
-            },
-            aspect: wgpu::TextureAspect::All,
-        },
-        &renderer.atlas_clear_scratch[..byte_count],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(rect.width as u32 * 4),
-            rows_per_image: None,
-        },
-        Extent3d {
-            width: rect.width as u32,
-            height: rect.height as u32,
-            depth_or_array_layers: 1,
-        },
+    renderer.zero_atlas_region(
+        queue,
+        AtlasId::new(rect.page_index),
+        RectU16::new(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height),
     );
 }
 

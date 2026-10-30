@@ -149,6 +149,10 @@ pub enum RenderError {
     /// An image paint referenced an image that has not been uploaded.
     #[error("Missing image cache entry for {0:?}")]
     MissingImage(ImageId),
+    /// An image paint drew an `ImageSource::Pixmap` that the renderer can't upload in this
+    /// call, such as in a scene rendered into the image atlas.
+    #[error("Pixmap image sources are not supported in this render")]
+    UnsupportedPixmapImage,
     /// An intermediate texture allocation failed.
     #[error(transparent)]
     IntermediateTexture(#[from] IntermediateTextureError),

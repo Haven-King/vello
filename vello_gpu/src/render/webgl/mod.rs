@@ -55,6 +55,7 @@ use crate::{
             pack_texture_width_and_extend_mode, pack_tint,
         },
     },
+    resources::PixmapImages,
     scene::Scene,
     schedule::{
         Backend, IntermediateTextureAllocations, Schedule, ScheduleStorage,
@@ -437,6 +438,11 @@ impl WebGlRenderer {
     /// [`WebGlTextureBindings::insert`] for the requirements on the bound textures.
     ///
     /// To render without any texture bindings, you can pass an empty [`WebGlTextureBindings`].
+    ///
+    /// Image paints whose source is an `ImageSource::Pixmap` are uploaded into the image atlas
+    /// the first time a render draws them, keyed by the identity of their `Arc`. A pixmap's
+    /// region is freed at the start of a render whose scene doesn't draw it, when the previous
+    /// render didn't draw it either.
     pub fn render(
         &mut self,
         scene: &Scene,
@@ -457,6 +463,23 @@ impl WebGlRenderer {
             *render_size,
             "Render size must match drawing buffer size"
         );
+
+        resources.pixmap_images.prepare(
+            &mut resources.image_cache,
+            &scene.encoded_paints,
+            self,
+            |renderer, atlas_id, region| {
+                renderer.clear_atlas_region(
+                    atlas_id,
+                    [region.x0, region.y0],
+                    region.width(),
+                    region.height(),
+                )
+            },
+            |renderer, image_cache, image_id, pixmap| {
+                renderer.write_to_atlas(image_cache, image_id, pixmap, None)
+            },
+        )?;
 
         #[cfg(feature = "text")]
         resources.before_render(
@@ -483,6 +506,7 @@ impl WebGlRenderer {
         self.render_scene(
             scene,
             &resources.image_cache,
+            &resources.pixmap_images,
             render_size,
             TargetInit::Clear(ClearSettings::Viewport { color: clear_color }),
             RootTarget::UserSurface,
@@ -566,6 +590,7 @@ impl WebGlRenderer {
         let result = self.render_scene(
             scene,
             &dummy_image_cache,
+            &PixmapImages::default(),
             &atlas_render_size,
             TargetInit::SrcOver,
             RootTarget::AtlasLayer,
@@ -605,6 +630,7 @@ impl WebGlRenderer {
         &mut self,
         scene: &Scene,
         image_cache: &ImageCache,
+        pixmap_images: &PixmapImages,
         render_size: &RenderSize,
         target_init: TargetInit<'_>,
         root_output_target: RootTarget,
@@ -617,6 +643,7 @@ impl WebGlRenderer {
         self.prepare_gpu_encoded_paints(
             encoded_paints,
             image_cache,
+            pixmap_images,
             texture_bindings,
             render_target_texture,
         )?;
@@ -636,8 +663,8 @@ impl WebGlRenderer {
 
         let current_allocations = self.current_allocations();
 
-        let paint_resolver =
-            PaintResolver::new(encoded_paints, &self.paint_idxs).with_image_cache(image_cache);
+        let paint_resolver = PaintResolver::new(encoded_paints, &self.paint_idxs)
+            .with_image_cache(image_cache, pixmap_images);
         let schedule = Schedule::try_new(
             &mut self.schedule_storage,
             scene,
@@ -868,6 +895,7 @@ impl WebGlRenderer {
         // Clear the region to transparent (0, 0, 0, 0)
         self.gl.clear_color(0.0, 0.0, 0.0, 0.0);
         self.gl.clear(WebGl2RenderingContext::COLOR_BUFFER_BIT);
+        self.gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
 
         Ok(())
     }
@@ -876,6 +904,7 @@ impl WebGlRenderer {
         &mut self,
         encoded_paints: &[EncodedPaint],
         image_cache: &ImageCache,
+        pixmap_images: &PixmapImages,
         texture_bindings: &WebGlTextureBindings,
         render_target_texture: Option<&WebGlTexture>,
     ) -> Result<(), WebGlError> {
@@ -904,8 +933,13 @@ impl WebGlRenderer {
                         }
                         Self::encode_external_texture_paint(img, *source_region)
                     }
-                    ImageSource::Pixmap(_) => {
-                        panic!("pixmap image sources are not supported by Vello GPU")
+                    ImageSource::Pixmap(pixmap) => {
+                        let id = pixmap_images
+                            .get(pixmap)
+                            .ok_or(RenderError::UnsupportedPixmapImage)?;
+                        let image_resource =
+                            image_cache.get(id).ok_or(RenderError::MissingImage(id))?;
+                        self.encode_image_paint(img, image_resource)
                     }
                 },
                 EncodedPaint::Gradient(gradient) => {

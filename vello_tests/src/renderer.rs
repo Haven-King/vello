@@ -929,8 +929,8 @@ impl Renderer for GpuRenderer {
         self.scene.push_layer(None, None, Some(opacity), None, None);
     }
 
-    fn push_mask_layer(&mut self, _: Mask) {
-        unimplemented!()
+    fn push_mask_layer(&mut self, mask: Mask) {
+        self.scene.push_mask_layer(mask);
     }
 
     fn push_filter_layer(&mut self, filter: Filter) {

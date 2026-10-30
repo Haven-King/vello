@@ -44,6 +44,7 @@ use crate::{
     copy::GpuCopyInstance,
     filter::{FilterContext, FilterInstanceData, FilterPassPlan},
     gradient_cache::GradientRampCache,
+    mask::GpuMaskInstance,
     paint::{PaintResolver, TextureSourceId},
     render::{
         Config,
@@ -56,7 +57,8 @@ use crate::{
     },
     scene::Scene,
     schedule::{
-        Backend, IntermediateTextureAllocations, Schedule, ScheduleStorage, round::BlendOp,
+        Backend, IntermediateTextureAllocations, Schedule, ScheduleStorage,
+        round::{BlendOp, MaskOp},
     },
     target::{
         BlendPassBindings, DrawPassBindings, DrawPassTarget, FilterPassBindings, LayerTextureId,
@@ -72,6 +74,7 @@ use hashbrown::HashMap;
 use resource::{Buffer, FragmentShader, Framebuffer, Program, Texture, VertexArray, VertexShader};
 use vello_common::color::{AlphaColor, Srgb};
 use vello_common::image_cache::{ImageCache, ImageResource};
+use vello_common::mask::Mask;
 use vello_common::multi_atlas::{AtlasConfig, AtlasId};
 use vello_common::{
     TextureId,
@@ -85,7 +88,7 @@ use vello_common::{
     pixmap::Pixmap,
     tile::Tile,
 };
-use vello_gpu_shaders::{blend, copy, filter as filter_shader, render};
+use vello_gpu_shaders::{blend, copy, filter as filter_shader, mask as mask_shader, render};
 use web_sys::wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
     HtmlCanvasElement, WebGl2RenderingContext, WebGlBuffer, WebGlFramebuffer, WebGlProgram,
@@ -661,6 +664,8 @@ impl WebGlRenderer {
             &self.schedule_storage.filter_context,
             root_output_target,
         )?;
+        self.programs
+            .prepare_masks(&self.gl, &self.schedule_storage.buffers.masks)?;
         self.programs.resources.depth_cleared_this_frame = false;
         let mut ctx = WebGlRendererContext {
             programs: &mut self.programs,
@@ -1131,6 +1136,12 @@ pub(crate) struct WebGlPrograms {
     copy_program: Program,
     /// Uniform locations for the copy program.
     copy_uniforms: CopyUniforms,
+    /// Program for multiplying layers by their masks.
+    mask_program: Program,
+    /// Uniform locations for the mask program.
+    mask_uniforms: MaskUniforms,
+    /// Textures holding the masks of the last rendered scene, indexed like its schedule's masks.
+    mask_textures: Vec<WebGlMaskTexture>,
     /// WebGL resources for rendering.
     pub(crate) resources: WebGlResources,
     /// Dimensions of the rendering target.
@@ -1160,6 +1171,22 @@ struct BlendUniforms {
 #[derive(Debug)]
 struct CopyUniforms {
     source_texture: WebGlUniformLocation,
+}
+
+#[derive(Debug)]
+struct MaskUniforms {
+    mask_texture: WebGlUniformLocation,
+}
+
+/// A mask uploaded to its own texture.
+#[derive(Debug)]
+struct WebGlMaskTexture {
+    /// The uploaded mask, kept to skip uploading it again in the next frame.
+    mask: Mask,
+    /// `R8` texture holding the mask in its top-left corner.
+    texture: Texture,
+    /// Width and height of `texture`.
+    size: (u32, u32),
 }
 
 /// Uniform locations for `strip_program`.
@@ -1306,6 +1333,10 @@ pub(crate) struct WebGlResources {
     copy_instance_buffer: Buffer,
     /// VAO for copy rendering.
     copy_vao: VertexArray,
+    /// Per-instance vertex data buffer for mask draws.
+    mask_instance_buffer: Buffer,
+    /// VAO for mask rendering.
+    mask_vao: VertexArray,
     /// Scratch texture.
     scratch_texture: Option<ScratchTexture<WebGlIntermediateTexture>>,
     /// Config buffer for rendering strips into a layer texture.
@@ -1462,6 +1493,7 @@ struct PendingWebGlPrograms {
     filter_program: PendingShaderProgram,
     blend_program: PendingShaderProgram,
     copy_program: PendingShaderProgram,
+    mask_program: PendingShaderProgram,
     resources: WebGlResources,
     encoded_paints_data: Vec<u8>,
 }
@@ -1491,6 +1523,11 @@ impl PendingWebGlPrograms {
             PendingShaderProgram::new(&gl, blend::VERTEX_SOURCE, blend::FRAGMENT_SOURCE)?;
         let copy_program =
             PendingShaderProgram::new(&gl, copy::VERTEX_SOURCE, copy::FRAGMENT_SOURCE)?;
+        let mask_program = PendingShaderProgram::new(
+            &gl,
+            mask_shader::VERTEX_SOURCE,
+            mask_shader::FRAGMENT_SOURCE,
+        )?;
 
         let resources = create_webgl_resources(
             &gl,
@@ -1504,6 +1541,7 @@ impl PendingWebGlPrograms {
         initialize_filter_vao(&gl, &resources);
         initialize_blend_vao(&gl, &resources);
         initialize_copy_vao(&gl, &resources);
+        initialize_mask_vao(&gl, &resources);
 
         let encoded_paints_data = vec![0; (resources.resource_texture_dimension_2d << 4) as usize];
 
@@ -1513,6 +1551,7 @@ impl PendingWebGlPrograms {
             filter_program,
             blend_program,
             copy_program,
+            mask_program,
             resources,
             encoded_paints_data,
         })
@@ -1530,6 +1569,9 @@ impl PendingWebGlPrograms {
             && self
                 .copy_program
                 .is_complete(gl, self.parallel_shader_compile)
+            && self
+                .mask_program
+                .is_complete(gl, self.parallel_shader_compile)
     }
 
     fn finish(self, gl: &WebGl2RenderingContext) -> Result<WebGlPrograms, WebGlError> {
@@ -1537,10 +1579,12 @@ impl PendingWebGlPrograms {
         let filter_program = self.filter_program.finish(gl)?;
         let blend_program = self.blend_program.finish(gl)?;
         let copy_program = self.copy_program.finish(gl)?;
+        let mask_program = self.mask_program.finish(gl)?;
 
         let filter_uniforms = get_filter_pass_uniforms(gl, &filter_program)?;
         let blend_uniforms = get_blend_uniforms(gl, &blend_program)?;
         let copy_uniforms = get_copy_uniforms(gl, &copy_program)?;
+        let mask_uniforms = get_mask_uniforms(gl, &mask_program)?;
         let strip_uniforms = get_strip_uniforms(gl, &strip_program)?;
 
         gl.enable(WebGl2RenderingContext::BLEND);
@@ -1558,6 +1602,9 @@ impl PendingWebGlPrograms {
             blend_uniforms,
             copy_program,
             copy_uniforms,
+            mask_program,
+            mask_uniforms,
+            mask_textures: Vec::new(),
             resources: self.resources,
             render_size: RenderSize {
                 width: 0,
@@ -1758,6 +1805,87 @@ impl WebGlPrograms {
         gl.bind_buffer(
             WebGl2RenderingContext::ARRAY_BUFFER,
             Some(&self.resources.blend_instance_buffer),
+        );
+        gl.buffer_data_with_u8_array(
+            WebGl2RenderingContext::ARRAY_BUFFER,
+            bytemuck::cast_slice(instances),
+            WebGl2RenderingContext::DYNAMIC_DRAW,
+        );
+    }
+
+    /// Upload the masks of the scene to be rendered, reusing textures and uploads of the last one.
+    fn prepare_masks(
+        &mut self,
+        gl: &WebGl2RenderingContext,
+        masks: &[Mask],
+    ) -> Result<(), WebGlError> {
+        for (index, mask) in masks.iter().enumerate() {
+            let existing = self.mask_textures.get(index);
+            if existing.is_some_and(|existing| existing.mask == *mask) {
+                continue;
+            }
+
+            let width = u32::from(mask.width()).max(1);
+            let height = u32::from(mask.height()).max(1);
+            if !existing
+                .is_some_and(|existing| existing.size.0 >= width && existing.size.1 >= height)
+            {
+                let mask_texture = WebGlMaskTexture {
+                    mask: mask.clone(),
+                    texture: create_data_texture_storage(
+                        gl,
+                        WebGl2RenderingContext::R8,
+                        width,
+                        height,
+                    )?,
+                    size: (width, height),
+                };
+                if index < self.mask_textures.len() {
+                    self.mask_textures[index] = mask_texture;
+                } else {
+                    self.mask_textures.push(mask_texture);
+                }
+            }
+
+            let mask_texture = &mut self.mask_textures[index];
+            mask_texture.mask = mask.clone();
+            if mask.width() == 0 || mask.height() == 0 {
+                continue;
+            }
+
+            gl.active_texture(WebGl2RenderingContext::TEXTURE0);
+            gl.bind_texture(
+                WebGl2RenderingContext::TEXTURE_2D,
+                Some(&mask_texture.texture),
+            );
+            // Mask rows are tightly packed, unlike WebGL's default 4-byte row alignment.
+            gl.pixel_storei(WebGl2RenderingContext::UNPACK_ALIGNMENT, 1);
+            let result = gl
+                .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+                    WebGl2RenderingContext::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    i32::from(mask.width()),
+                    i32::from(mask.height()),
+                    WebGl2RenderingContext::RED,
+                    WebGl2RenderingContext::UNSIGNED_BYTE,
+                    Some(mask.data()),
+                )
+                .map_js_error(WebGlOperation::DataTransfer(
+                    WebGlDataTransferOperation::TextureUpload,
+                ));
+            gl.pixel_storei(WebGl2RenderingContext::UNPACK_ALIGNMENT, 4);
+            result?;
+        }
+
+        Ok(())
+    }
+
+    fn upload_mask_instances(&self, gl: &WebGl2RenderingContext, instances: &[GpuMaskInstance]) {
+        gl.bind_buffer(
+            WebGl2RenderingContext::ARRAY_BUFFER,
+            Some(&self.resources.mask_instance_buffer),
         );
         gl.buffer_data_with_u8_array(
             WebGl2RenderingContext::ARRAY_BUFFER,
@@ -2190,6 +2318,15 @@ fn get_copy_uniforms(
     })
 }
 
+fn get_mask_uniforms(
+    gl: &WebGl2RenderingContext,
+    program: &Program,
+) -> Result<MaskUniforms, WebGlError> {
+    Ok(MaskUniforms {
+        mask_texture: required_uniform_location(gl, program, mask_shader::fragment::MASK_TEXTURE)?,
+    })
+}
+
 /// Derive this from the number of fields on [`FilterInstanceData`].
 const FILTER_ATTRIB_COUNT: u32 = 9;
 const FILTER_INSTANCE_STRIDE: i32 = size_of::<FilterInstanceData>() as i32;
@@ -2246,6 +2383,26 @@ fn initialize_copy_vao(gl: &WebGl2RenderingContext, resources: &WebGlResources) 
     );
 
     initialize_packed_u32_attribs(gl, COPY_ATTRIB_COUNT, COPY_INSTANCE_STRIDE);
+
+    gl.bind_vertex_array(None);
+}
+
+/// Derive this from the number of fields on [`GpuMaskInstance`].
+const MASK_ATTRIB_COUNT: u32 = 6;
+const MASK_INSTANCE_STRIDE: i32 = size_of::<GpuMaskInstance>() as i32;
+
+fn initialize_mask_vao(gl: &WebGl2RenderingContext, resources: &WebGlResources) {
+    gl.bind_vertex_array(Some(&resources.mask_vao));
+    gl.bind_buffer(
+        WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,
+        Some(&resources.quad_index_buffer),
+    );
+    gl.bind_buffer(
+        WebGl2RenderingContext::ARRAY_BUFFER,
+        Some(&resources.mask_instance_buffer),
+    );
+
+    initialize_packed_u32_attribs(gl, MASK_ATTRIB_COUNT, MASK_INSTANCE_STRIDE);
 
     gl.bind_vertex_array(None);
 }
@@ -2453,9 +2610,11 @@ fn create_webgl_resources(
     let filter_vao = VertexArray::new(gl)?;
     let blend_vao = VertexArray::new(gl)?;
     let copy_vao = VertexArray::new(gl)?;
+    let mask_vao = VertexArray::new(gl)?;
     let filter_instance_buffer = Buffer::new(gl)?;
     let blend_instance_buffer = Buffer::new(gl)?;
     let copy_instance_buffer = Buffer::new(gl)?;
+    let mask_instance_buffer = Buffer::new(gl)?;
 
     let strips_buffer = Buffer::new(gl)?;
     let view_config_buffer = Buffer::new(gl)?;
@@ -2523,6 +2682,8 @@ fn create_webgl_resources(
         blend_vao,
         copy_instance_buffer,
         copy_vao,
+        mask_instance_buffer,
+        mask_vao,
         scratch_texture,
         layer_config_buffer,
         layer_textures,
@@ -3064,6 +3225,77 @@ impl WebGlRendererContext<'_> {
         Ok(())
     }
 
+    fn mask_pass_inner(
+        &mut self,
+        masks: RangedSlice<'_, MaskOp>,
+        target: LayerTextureId,
+    ) -> Result<(), WebGlError> {
+        let texture_size = self.texture_size();
+
+        self.gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
+        self.gl.disable(WebGl2RenderingContext::DEPTH_TEST);
+        self.gl.depth_mask(false);
+        self.gl.enable(WebGl2RenderingContext::BLEND);
+        // The mask shader only outputs the mask value, which this multiplies the layer by.
+        self.gl.blend_func(
+            WebGl2RenderingContext::ZERO,
+            WebGl2RenderingContext::SRC_COLOR,
+        );
+        self.gl.bind_framebuffer(
+            WebGl2RenderingContext::FRAMEBUFFER,
+            Some(self.programs.resources.layer_framebuffer(target)),
+        );
+        self.gl.viewport(
+            0,
+            0,
+            i32::from(texture_size.width()),
+            i32::from(texture_size.height()),
+        );
+        self.gl
+            .bind_vertex_array(Some(&self.programs.resources.mask_vao));
+        self.gl.use_program(Some(&self.programs.mask_program));
+        self.gl.active_texture(WebGl2RenderingContext::TEXTURE0);
+        self.gl
+            .uniform1i(Some(&self.programs.mask_uniforms.mask_texture), 0);
+
+        // WebGL has no base instance, so draw the instances of each mask separately.
+        let mut result = Ok(());
+        let mut mask_indices = masks.iter().map(|op| op.mask_index).collect::<Vec<_>>();
+        mask_indices.sort_unstable();
+        mask_indices.dedup();
+        for mask_index in mask_indices {
+            let mask_texture = &self.programs.mask_textures[mask_index as usize];
+            let instances = &mut self.scratch_buffers.mask_instances;
+            instances.clear();
+            instances.extend(
+                masks
+                    .iter()
+                    .filter(|op| op.mask_index == mask_index)
+                    .map(|op| GpuMaskInstance::new(op, &mask_texture.mask, texture_size)),
+            );
+            self.programs.upload_mask_instances(self.gl, instances);
+            self.gl.bind_texture(
+                WebGl2RenderingContext::TEXTURE_2D,
+                Some(&mask_texture.texture),
+            );
+            match checked_instance_count(instances.len()) {
+                Ok(count) => self.draw_instanced_quads(count),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+
+        self.gl.blend_func(
+            WebGl2RenderingContext::ONE,
+            WebGl2RenderingContext::ONE_MINUS_SRC_ALPHA,
+        );
+        self.gl.bind_vertex_array(None);
+
+        result
+    }
+
     fn filter_pass_inner(
         &mut self,
         plan: &FilterPassPlan,
@@ -3274,6 +3506,14 @@ impl Backend for WebGlRendererContext<'_> {
         bindings: BlendPassBindings,
     ) -> Result<(), Self::Error> {
         self.blend_pass_inner(blends, blend_strips, bindings)
+    }
+
+    fn mask_pass(
+        &mut self,
+        masks: RangedSlice<'_, MaskOp>,
+        target: LayerTextureId,
+    ) -> Result<(), Self::Error> {
+        self.mask_pass_inner(masks, target)
     }
 
     fn filter_pass(

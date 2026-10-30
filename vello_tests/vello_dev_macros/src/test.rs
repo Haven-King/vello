@@ -623,7 +623,7 @@ pub(crate) fn vello_test_inner(attr: TokenStream, item: TokenStream) -> TokenStr
     let input_fn = parse_macro_input!(item as ItemFn);
     let input_fn_name = input_fn.sig.ident.clone();
     let input_fn_name_str = input_fn_name.to_string();
-    let mut args = match parse_args(attr) {
+    let args = match parse_args(attr) {
         Ok(args) => args,
         Err(error) => return error.into_compile_error().into(),
     };
@@ -637,9 +637,6 @@ pub(crate) fn vello_test_inner(attr: TokenStream, item: TokenStream) -> TokenStr
         ),
     }
 
-    // These tests currently don't work with `vello_gpu`.
-    args.skip_gpu |= input_fn_name_str.contains("layer_multiple_properties")
-        || input_fn_name_str.contains("mask");
     assert!(
         !(args.gpu_only && args.skip_gpu),
         "`gpu_only` cannot be combined with `skip_gpu`"

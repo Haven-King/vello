@@ -76,9 +76,10 @@ than its CPU-only counterpart Vello CPU.
 
 Vello GPU remains under active development. Known limitations include:
 
-- The following features are not yet supported and will panic: Mask layers,
-  complex filter graphs as well as certain blend modes for non-isolated
-  blending.
+- The following features are not yet supported and will panic: Complex filter
+  graphs as well as certain blend modes for non-isolated blending. Masks are
+  only supported as mask layers, not for individual paths (`set_mask` in Vello
+  CPU).
 - Parts of the API and its documentation are still suboptimal, for example the
   lifecycle and ownership of external resources through [`Resources`][].
 - Some exposed features remain experimental and are not recommended for use,

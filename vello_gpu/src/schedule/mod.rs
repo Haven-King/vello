@@ -117,6 +117,13 @@
 //! the child can be cleared and released. When a non-default blend targets the root, the root is
 //! first rendered into an intermediate layer because the user-provided target cannot be sampled
 //! directly. The remaining process is the same as for any other non-default blend.
+//!
+//! ## Mask layers
+//!
+//! A layer with a mask is first scheduled like any other layer, including its filter. The region
+//! sampled by its parent is then multiplied by the mask in place, in the mask stage of the layer's
+//! own texture group, and the layer only becomes available to its parent after that. Composition
+//! therefore needs no knowledge of masks, regardless of whether it is a plain draw or a blend.
 
 mod allocate;
 mod cursor;
@@ -131,7 +138,7 @@ use self::allocate::{Atlases, LayerAllocationRequest};
 use self::cursor::Cursor;
 pub(crate) use self::execute::{Backend, execute};
 use self::round::{
-    BlendOp, FilterOp, FilterTextureRegions, Round, RoundStage, Rounds, SchedulePoint,
+    BlendOp, FilterOp, FilterTextureRegions, MaskOp, Round, RoundStage, Rounds, SchedulePoint,
 };
 use crate::draw::{Draw, DrawBuffers, DrawBuilder, DrawState, RectU16Ext};
 use crate::filter::{FilterContext, FilterPassPlan, PreparedGpuFilter};
@@ -145,6 +152,7 @@ use crate::{IntermediateTextureError, RenderError, Scene, blend::BlendStrip};
 use alloc::vec::Vec;
 use vello_common::filter::FilterLayerPlacement;
 use vello_common::geometry::{RectU16, SizeU16};
+use vello_common::mask::Mask;
 use vello_common::peniko::BlendMode;
 use vello_common::record::{CommandRecorder, LayerProps, Node, RecordedLayer, RecordedLayerKind};
 use vello_common::strip::visit_strip_fill_segments;
@@ -383,7 +391,8 @@ impl<'a, 'p> Scheduler<'a, 'p> {
 
                 // Next, we schedule the layer node. This might trigger advances to our current
                 // base round.
-                let child = self.schedule_child_layer(cmd, state.draw_state.target_bbox, rounds)?;
+                let child =
+                    self.schedule_child_layer(cmd, state.draw_state.target_bbox, (0, 0), rounds)?;
 
                 // Finally, we also schedule the layer sampling operation. It's guaranteed to be
                 // a simple layer, since we know for sure that the root isn't a blend target.
@@ -408,7 +417,12 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             // First make sure that the child node is scheduled, in case it exists. Unlike for root
             // layers, we need to make sure to do this _before_ pushing any draws.
             // TODO: Similarly to Vello CPU, flatten this to avoid stack overflows for deep layers
-            let child = self.schedule_child_layer(cmd, layer.sample_placement.dest_bbox, rounds)?;
+            let child = self.schedule_child_layer(
+                cmd,
+                layer.sample_placement.dest_bbox,
+                layer.source_shift,
+                rounds,
+            )?;
 
             // Keep this after `schedule_child_layer`: allocating lazily is what makes traversal
             // bottom-up with respect to memory, while still allowing compatible layers to batch.
@@ -482,10 +496,13 @@ impl<'a, 'p> Scheduler<'a, 'p> {
     }
 
     /// Resolve and schedule the optional child layer referenced by a command node.
+    ///
+    /// `parent_shift` is the summed source shift of the filter layers enclosing the parent.
     fn schedule_child_layer(
         &mut self,
         cmd: &Node,
         parent_bounds: RectU16,
+        parent_shift: (i32, i32),
         rounds: &mut Rounds,
     ) -> Result<Option<PreparedChild<'a>>, RenderError> {
         let Some(layer_id) = cmd.layer else {
@@ -523,8 +540,12 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             return Ok(None);
         }
 
-        let opened_layer = self.open_layer(layer, bbox);
-        let scheduled = self.schedule_layer(opened_layer, rounds)?;
+        let opened_layer = self.open_layer(layer, bbox, parent_shift);
+        let mut scheduled = self.schedule_layer(opened_layer, rounds)?;
+
+        if let Some(mask) = &layer.props.mask {
+            self.apply_mask(mask, &mut scheduled, parent_shift, rounds);
+        }
 
         Ok(Some(PreparedChild {
             props: &layer.props,
@@ -532,11 +553,79 @@ impl<'a, 'p> Scheduler<'a, 'p> {
         }))
     }
 
+    /// Multiply a completed layer by its mask before its parent samples it.
+    ///
+    /// Masks are in scene pixels, placed at their origin, so `source_shift`, the summed source shift
+    /// of the filter layers enclosing the parent, is undone to find the mask pixel under each layer
+    /// pixel.
+    fn apply_mask(
+        &mut self,
+        mask: &Mask,
+        layer: &mut ScheduledLayer,
+        source_shift: (i32, i32),
+        rounds: &mut Rounds,
+    ) {
+        let region = layer.sample_region;
+        if region.layer_bbox.is_empty() {
+            return;
+        }
+
+        let masks = &mut self.storage.buffers.masks;
+        let mask_index = masks.iter().position(|m| m == mask).unwrap_or_else(|| {
+            masks.push(mask.clone());
+            masks.len() - 1
+        });
+
+        let target = region.texture.target;
+        let (origin_x, origin_y) = mask.origin();
+        let mask_point = rounds.bind_at_or_after(
+            layer.ready.after(RoundStage::mask(target.texture_parity)),
+            RoundBindings::new(target),
+        );
+        rounds.round_mut(mask_point.round).push_mask_op(
+            target.texture_parity,
+            &mut self.storage.buffers,
+            MaskOp {
+                region,
+                mask_index: u32::try_from(mask_index).unwrap(),
+                mask_offset: (
+                    i32::from(region.layer_bbox.x0)
+                        - i32::from(region.texture.rect.x0)
+                        - source_shift.0
+                        - origin_x,
+                    i32::from(region.layer_bbox.y0)
+                        - i32::from(region.texture.rect.y0)
+                        - source_shift.1
+                        - origin_y,
+                ),
+            },
+        );
+
+        layer.ready = mask_point;
+    }
+
     /// Create an unallocated scheduling view of a recorded layer with the given visible bounds.
-    fn open_layer(&self, layer: &'a RecordedLayer, bbox: RectU16) -> OpenLayer<'a> {
-        let sample_placement = match &layer.kind {
-            RecordedLayerKind::Regular => LayerSamplePlacement::regular(bbox),
-            RecordedLayerKind::Filter { placement, .. } => LayerSamplePlacement::filter(*placement),
+    fn open_layer(
+        &self,
+        layer: &'a RecordedLayer,
+        bbox: RectU16,
+        parent_shift: (i32, i32),
+    ) -> OpenLayer<'a> {
+        let (sample_placement, source_shift) = match &layer.kind {
+            RecordedLayerKind::Regular => (LayerSamplePlacement::regular(bbox), parent_shift),
+            RecordedLayerKind::Filter {
+                placement,
+                filter_data,
+            } => {
+                let (shift_x, shift_y) = filter_data.source_shift();
+                (
+                    LayerSamplePlacement::filter(*placement),
+                    (
+                        parent_shift.0 + i32::from(shift_x),
+                        parent_shift.1 + i32::from(shift_y),
+                    ),
+                )
+            }
         };
 
         OpenLayer {
@@ -545,6 +634,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             texture_parity: self.layer_texture_parity(layer.depth),
             bbox,
             sample_placement,
+            source_shift,
             target: None,
         }
     }
@@ -557,6 +647,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             texture_parity: TextureParity::Odd,
             bbox: self.scene_bbox,
             sample_placement: LayerSamplePlacement::regular(self.scene_bbox),
+            source_shift: (0, 0),
             target: None,
         }
     }
@@ -867,6 +958,9 @@ struct OpenLayer<'a> {
     bbox: RectU16,
     /// Placement used when the completed layer is sampled by its parent.
     sample_placement: LayerSamplePlacement,
+    /// Summed source shift of this layer and the filter layers enclosing it, which its contents
+    /// are drawn with.
+    source_shift: (i32, i32),
     /// Lazily allocated target and its scheduling state.
     target: Option<LayerTarget>,
 }
@@ -971,6 +1065,10 @@ pub(crate) struct ScheduleBuffers {
     pub(crate) draw_buffers: DrawBuffers,
     /// Filter operations referenced by ranges in scheduled rounds.
     pub(crate) filter_ops: Vec<FilterOp>,
+    /// Mask operations referenced by ranges in scheduled rounds.
+    pub(crate) mask_ops: Vec<MaskOp>,
+    /// Distinct masks referenced by [`MaskOp::mask_index`].
+    pub(crate) masks: Vec<Mask>,
     /// Blend operations referenced by ranges in scheduled rounds.
     pub(crate) blend_ops: Vec<BlendOp>,
     /// Clip strips referenced by non-default blend operations.
@@ -981,6 +1079,8 @@ impl ScheduleBuffers {
     fn clear(&mut self) {
         self.draw_buffers.clear();
         self.filter_ops.clear();
+        self.mask_ops.clear();
+        self.masks.clear();
         self.blend_ops.clear();
         self.blend_strips.clear();
     }

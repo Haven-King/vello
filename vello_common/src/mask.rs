@@ -130,6 +130,12 @@ impl Mask {
         self.repr.height
     }
 
+    /// Return the mask's values in row-major order.
+    #[inline(always)]
+    pub fn data(&self) -> &[u8] {
+        &self.repr.data
+    }
+
     /// Sample the value at a specific location.
     ///
     /// This function might panic or yield a wrong result if the location

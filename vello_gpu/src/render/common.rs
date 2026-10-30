@@ -12,6 +12,7 @@ use crate::IntermediateTextureError;
 use crate::blend::GpuBlendInstance;
 use crate::copy::GpuCopyInstance;
 use crate::filter::FILTER_ATLAS_PADDING;
+use crate::mask::GpuMaskInstance;
 use crate::scene::{LayersConfig, MemorySettings, RecordedDraw};
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
@@ -120,6 +121,8 @@ pub(crate) struct ScratchBuffers {
     pub(crate) blend_instances: Vec<GpuBlendInstance>,
     /// Copy instances scratch buffer.
     pub(crate) copy_instances: Vec<GpuCopyInstance>,
+    /// Mask instances scratch buffer.
+    pub(crate) mask_instances: Vec<GpuMaskInstance>,
 }
 
 /// Per-instance data for clearing a rectangle in a render target.

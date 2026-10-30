@@ -3,7 +3,7 @@
 
 //! Executes planned rendering rounds through a backend.
 
-use super::round::{BlendOp, Rounds};
+use super::round::{BlendOp, MaskOp, Rounds};
 use super::{Schedule, ScheduleBuffers, ScheduleStorage};
 use crate::draw::ExternalTextureRun;
 use crate::filter::FilterPassPlan;
@@ -53,6 +53,15 @@ pub(crate) trait Backend {
         blends: RangedSlice<'_, BlendOp>,
         blend_strips: &[BlendStrip],
         bindings: BlendPassBindings,
+    ) -> Result<(), Self::Error>;
+
+    /// Multiply regions of a layer texture by their masks.
+    ///
+    /// The masks are guaranteed to be non-empty.
+    fn mask_pass(
+        &mut self,
+        masks: RangedSlice<'_, MaskOp>,
+        target: LayerTextureId,
     ) -> Result<(), Self::Error>;
 
     /// Execute a filter pass according to the filter plan between two textures.
@@ -142,6 +151,12 @@ impl Rounds {
                     backend.filter_pass(filter_plan, pass.bindings)?;
                 }
 
+                // Then, completed layers in this texture are multiplied by their masks, before
+                // their parents sample or blend them.
+                if let Some(pass) = layer_passes.mask {
+                    backend.mask_pass(pass.masks, pass.target)?;
+                }
+
                 // Finally, we apply all blend operations of layers in the current texture
                 // that form the backdrop of some child texture.
                 if let Some(pass) = layer_passes.blend {
@@ -178,6 +193,7 @@ mod tests {
         Opaque,
         Draw(DrawPassTarget, Option<LayerTextureId>),
         Filter(LayerTextureId),
+        Mask(LayerTextureId),
         Blend(TextureParity),
         Clear(LayerTextureId),
     }
@@ -187,9 +203,11 @@ mod tests {
         Opaque,
         EvenDraw,
         EvenFilter,
+        EvenMask,
         EvenBlend,
         OddDraw,
         OddFilter,
+        OddMask,
         OddBlend,
         RootDraw,
         EvenClear,
@@ -208,6 +226,10 @@ mod tests {
                 Self::Filter(id) => match id.texture_parity {
                     TextureParity::Even => Stage::EvenFilter,
                     TextureParity::Odd => Stage::OddFilter,
+                },
+                Self::Mask(id) => match id.texture_parity {
+                    TextureParity::Even => Stage::EvenMask,
+                    TextureParity::Odd => Stage::OddMask,
                 },
                 Self::Blend(TextureParity::Even) => Stage::EvenBlend,
                 Self::Blend(TextureParity::Odd) => Stage::OddBlend,
@@ -266,6 +288,16 @@ mod tests {
         ) -> Result<(), Self::Error> {
             self.calls
                 .push(Call::Blend(bindings.target().texture_parity));
+
+            Ok(())
+        }
+
+        fn mask_pass(
+            &mut self,
+            _masks: RangedSlice<'_, MaskOp>,
+            target: LayerTextureId,
+        ) -> Result<(), Self::Error> {
+            self.calls.push(Call::Mask(target));
 
             Ok(())
         }
@@ -364,6 +396,42 @@ mod tests {
                 // Second round.
                 Stage::EvenBlend,
                 Stage::OddDraw,
+                Stage::RootDraw,
+                Stage::EvenClear,
+                Stage::OddClear,
+            ]
+        );
+    }
+
+    #[test]
+    fn masks_apply_before_parents_sample() {
+        let mut case = SceneCase::new(32, 8);
+        case.draw_at(0.0, 1.0);
+        case.layer(|case| {
+            case.draw_at(4.0, 0.5);
+            case.mask_layer(|case| case.draw_at(8.0, 0.5));
+        });
+        case.mask_layer(|case| case.draw_at(12.0, 0.5));
+
+        let mut recorder = Recorder::default();
+        case.schedule(RootTarget::UserSurface, SizeU16::new(64), 4, true)
+            .unwrap()
+            .execute(&mut recorder);
+
+        assert_eq!(
+            recorder
+                .calls
+                .into_iter()
+                .map(Call::stage)
+                .collect::<Vec<_>>(),
+            [
+                Stage::Opaque,
+                // The masked child of the first layer.
+                Stage::EvenDraw,
+                Stage::EvenMask,
+                // The first layer, which samples it, and the second masked layer.
+                Stage::OddDraw,
+                Stage::OddMask,
                 Stage::RootDraw,
                 Stage::EvenClear,
                 Stage::OddClear,

@@ -174,18 +174,26 @@ impl Round {
                     bindings: FilterPassBindings::new(target.unwrap(), opposite.unwrap()),
                 });
 
+                let mask = (pass.mask_ranges.len() != 0).then(|| MaskPass {
+                    masks: buffers.mask_ops.ranged(&pass.mask_ranges),
+                    target: target.unwrap(),
+                });
+
                 let blend = (pass.blend_ranges.len() != 0).then(|| BlendPass {
                     blends: buffers.blend_ops.ranged(&pass.blend_ranges),
                     blend_strips: &buffers.blend_strips,
                     bindings: BlendPassBindings::new(target.unwrap(), opposite.unwrap()),
                 });
 
-                (draw.is_some() || filter.is_some() || blend.is_some()).then_some(LayerPass {
-                    texture_parity,
-                    draw,
-                    filter,
-                    blend,
-                })
+                (draw.is_some() || filter.is_some() || mask.is_some() || blend.is_some()).then_some(
+                    LayerPass {
+                        texture_parity,
+                        draw,
+                        filter,
+                        mask,
+                        blend,
+                    },
+                )
             })
     }
 
@@ -250,6 +258,18 @@ impl Round {
         );
     }
 
+    pub(super) fn push_mask_op(
+        &mut self,
+        texture_parity: TextureParity,
+        buffers: &mut ScheduleBuffers,
+        mask: MaskOp,
+    ) {
+        buffers.mask_ops.push_ranged(
+            &mut self.layer_texture_passes[texture_parity.get_parity()].mask_ranges,
+            mask,
+        );
+    }
+
     pub(super) fn push_filter_op(
         &mut self,
         texture_parity: TextureParity,
@@ -273,6 +293,7 @@ impl Round {
             let opposite = self.texture_binding.layer_id(texture_parity.opposite());
             let has_draw = pass.draw.strip_ranges.len() != 0;
             let has_filter = pass.filter_ranges.len() != 0;
+            let has_mask = pass.mask_ranges.len() != 0;
             let has_blend = pass.blend_ranges.len() != 0;
 
             assert!(
@@ -280,7 +301,7 @@ impl Round {
                 "round {round_idx} has a child-layer binding without a layer draw"
             );
             assert!(
-                !(has_draw || has_filter || has_blend) || target.is_some(),
+                !(has_draw || has_filter || has_mask || has_blend) || target.is_some(),
                 "round {round_idx} has a layer pass with no bound target"
             );
             assert!(
@@ -298,6 +319,14 @@ impl Round {
                     opposite,
                     Some(filter.textures.temporary.target),
                     "round {round_idx} has a filter whose temporary texture is not bound"
+                );
+            }
+
+            for mask in buffers.mask_ops.ranged(&pass.mask_ranges).iter() {
+                assert_eq!(
+                    target,
+                    Some(mask.region.texture.target),
+                    "round {round_idx} has a mask whose target is not bound"
                 );
             }
 
@@ -338,9 +367,9 @@ impl Round {
 pub(super) enum RoundStage {
     /// Start of a round, before any rendering stage.
     Start,
-    /// Draw, filter, or blend stage targeting the even layer texture.
+    /// Draw, filter, mask, or blend stage targeting the even layer texture.
     Even(LayerStage),
-    /// Draw, filter, or blend stage targeting the odd layer texture.
+    /// Draw, filter, mask, or blend stage targeting the odd layer texture.
     Odd(LayerStage),
     /// Draw stage targeting the root output.
     RootDraw,
@@ -353,6 +382,8 @@ pub(super) enum LayerStage {
     Draw,
     /// Apply filter passes.
     Filter,
+    /// Apply the masks of completed layers before their parents sample them.
+    Mask,
     /// Apply non-default blend operations.
     Blend,
 }
@@ -369,6 +400,13 @@ impl RoundStage {
         match texture_parity {
             TextureParity::Even => Self::Even(LayerStage::Filter),
             TextureParity::Odd => Self::Odd(LayerStage::Filter),
+        }
+    }
+
+    pub(super) const fn mask(texture_parity: TextureParity) -> Self {
+        match texture_parity {
+            TextureParity::Even => Self::Even(LayerStage::Mask),
+            TextureParity::Odd => Self::Odd(LayerStage::Mask),
         }
     }
 
@@ -436,7 +474,9 @@ pub(super) struct LayerTexturePass {
     draw: Draw,
     /// Ranges of filter operations executed after the draw.
     filter_ranges: Ranges,
-    /// Ranges of blend operations executed after the filters.
+    /// Ranges of mask operations executed after the filters.
+    mask_ranges: Ranges,
+    /// Ranges of blend operations executed after the masks.
     blend_ranges: Ranges,
 }
 
@@ -453,6 +493,13 @@ pub(super) struct DrawPass<'a> {
 pub(super) struct FilterPass<'a> {
     pub(super) filters: RangedSlice<'a, FilterOp>,
     pub(super) bindings: FilterPassBindings,
+}
+
+/// Mask work and the layer texture it multiplies.
+#[derive(Debug)]
+pub(super) struct MaskPass<'a> {
+    pub(super) masks: RangedSlice<'a, MaskOp>,
+    pub(super) target: LayerTextureId,
 }
 
 /// Blend work and resolved texture bindings for one pass.
@@ -475,6 +522,7 @@ pub(super) struct ClearPass<'a> {
 pub(super) struct LayerPass<'a> {
     pub(super) draw: Option<DrawPass<'a>>,
     pub(super) filter: Option<FilterPass<'a>>,
+    pub(super) mask: Option<MaskPass<'a>>,
     pub(super) blend: Option<BlendPass<'a>>,
     #[allow(dead_code, reason = "only used for a test.")]
     pub(super) texture_parity: TextureParity,
@@ -513,6 +561,17 @@ pub(crate) struct FilterOp {
     pub(crate) filter_data_offset: u32,
     /// Prepared filter parameters used to select and size passes.
     pub(crate) gpu_filter: GpuFilterData,
+}
+
+/// A scheduled multiplication of a completed layer by its mask.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MaskOp {
+    /// Region of the layer sampled by its parent, which the mask multiplies.
+    pub(crate) region: LayerTextureRegion,
+    /// Index of the mask in [`ScheduleBuffers::masks`].
+    pub(crate) mask_index: u32,
+    /// Offset from texture pixels in `region` to mask pixels.
+    pub(crate) mask_offset: (i32, i32),
 }
 
 /// A scheduled non-default blend between a parent and child layer.

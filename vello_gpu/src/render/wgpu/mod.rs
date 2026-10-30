@@ -19,6 +19,7 @@ use crate::{
     copy::GpuCopyInstance,
     filter::{FilterContext, FilterInstanceData, FilterPassPlan},
     gradient_cache::GradientRampCache,
+    mask::GpuMaskInstance,
     paint::{PaintResolver, TextureSourceId},
     render::{
         Config,
@@ -31,7 +32,8 @@ use crate::{
     },
     scene::Scene,
     schedule::{
-        Backend, IntermediateTextureAllocations, Schedule, ScheduleStorage, round::BlendOp,
+        Backend, IntermediateTextureAllocations, Schedule, ScheduleStorage,
+        round::{BlendOp, MaskOp},
     },
     target::{
         BlendPassBindings, DrawPassBindings, DrawPassTarget, FilterPassBindings, LayerTextureId,
@@ -46,6 +48,7 @@ use glifo::PendingClearRect;
 use hashbrown::{HashMap, hash_map::Entry};
 use vello_common::color::{AlphaColor, Srgb};
 use vello_common::image_cache::{ImageCache, ImageResource};
+use vello_common::mask::Mask;
 use vello_common::multi_atlas::{AtlasConfig, AtlasId};
 use vello_common::{
     TextureId,
@@ -60,10 +63,10 @@ use vello_common::{
     tile::Tile,
 };
 use wgpu::{
-    BindGroup, BindGroupLayout, BlendState, Buffer, BufferDescriptor, COPY_BUFFER_ALIGNMENT,
-    ColorTargetState, ColorWrites, CommandEncoder, Device, Extent3d, PipelineCompilationOptions,
-    Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, Sampler, Texture,
-    TextureView, TextureViewDescriptor, util::DeviceExt,
+    BindGroup, BindGroupLayout, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer,
+    BufferDescriptor, COPY_BUFFER_ALIGNMENT, ColorTargetState, ColorWrites, CommandEncoder, Device,
+    Extent3d, PipelineCompilationOptions, Queue, RenderPassColorAttachment, RenderPassDescriptor,
+    RenderPipeline, Sampler, Texture, TextureView, TextureViewDescriptor, util::DeviceExt,
 };
 
 /// Placeholder value for uninitialized GPU encoded paints.
@@ -465,6 +468,8 @@ impl Renderer {
             &self.paint_idxs,
             &self.schedule_storage.filter_context,
         );
+        self.programs
+            .prepare_masks(device, queue, &self.schedule_storage.buffers.masks);
 
         let strip_count = self
             .schedule_storage
@@ -889,6 +894,17 @@ fn clear_atlas_region(queue: &Queue, renderer: &mut Renderer, rect: &PendingClea
     );
 }
 
+/// A mask uploaded to its own texture.
+#[derive(Debug)]
+struct MaskTexture {
+    /// The uploaded mask, kept to skip uploading it again in the next frame.
+    mask: Mask,
+    /// Texture holding the mask in its top-left corner.
+    texture: Texture,
+    /// Bind group sampling `texture`.
+    bind_group: BindGroup,
+}
+
 /// Defines the GPU resources and pipelines for rendering.
 #[derive(Debug)]
 struct Programs {
@@ -938,6 +954,10 @@ struct Programs {
     blend_pipeline: RenderPipeline,
     /// Copy pipeline.
     copy_pipeline: RenderPipeline,
+    /// Pipeline multiplying layer regions by their masks.
+    mask_pipeline: RenderPipeline,
+    /// Textures holding the masks of the last rendered scene, indexed like its schedule's masks.
+    mask_textures: Vec<MaskTexture>,
     /// GPU resources for rendering (created during prepare)
     resources: GpuResources,
     /// Arena holding all [`GpuStrip`] data.
@@ -1524,6 +1544,10 @@ impl Programs {
             label: Some("Copy Shader"),
             source: wgpu::ShaderSource::Wgsl(vello_gpu_shaders::wgsl::COPY.into()),
         });
+        let mask_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Mask Shader"),
+            source: wgpu::ShaderSource::Wgsl(vello_gpu_shaders::wgsl::MASK.into()),
+        });
         let blend_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Blend Pipeline Layout"),
@@ -1559,11 +1583,24 @@ impl Programs {
                 3 => Uint32,
             ],
         };
+        let mask_vertex_state = wgpu::VertexBufferLayout {
+            array_stride: size_of::<GpuMaskInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![
+                0 => Uint32,
+                1 => Uint32,
+                2 => Uint32,
+                3 => Uint32,
+                4 => Uint32,
+                5 => Uint32,
+            ],
+        };
         let create_texture_op_pipeline =
             |label,
              shader_module: &wgpu::ShaderModule,
              layout,
-             vertex_state: &wgpu::VertexBufferLayout<'_>| {
+             vertex_state: &wgpu::VertexBufferLayout<'_>,
+             blend: Option<BlendState>| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(layout),
@@ -1578,7 +1615,7 @@ impl Programs {
                         entry_point: Some("fs_main"),
                         targets: &[Some(ColorTargetState {
                             format: wgpu::TextureFormat::Rgba8Unorm,
-                            blend: None,
+                            blend,
                             write_mask: ColorWrites::ALL,
                         })],
                         compilation_options: PipelineCompilationOptions::default(),
@@ -1598,12 +1635,31 @@ impl Programs {
             &blend_shader,
             &blend_pipeline_layout,
             &blend_vertex_state,
+            None,
         );
         let copy_pipeline = create_texture_op_pipeline(
             "Copy Pipeline",
             &copy_shader,
             &copy_pipeline_layout,
             &copy_vertex_state,
+            None,
+        );
+        // The mask shader only outputs the mask value, which the blend state multiplies the layer
+        // by. The mask texture is bound like a copy source.
+        let multiply = BlendComponent {
+            src_factor: BlendFactor::Zero,
+            dst_factor: BlendFactor::Src,
+            operation: BlendOperation::Add,
+        };
+        let mask_pipeline = create_texture_op_pipeline(
+            "Mask Pipeline",
+            &mask_shader,
+            &copy_pipeline_layout,
+            &mask_vertex_state,
+            Some(BlendState {
+                color: multiply,
+                alpha: multiply,
+            }),
         );
 
         let texture_size = layer_config.min_texture_size;
@@ -1750,6 +1806,8 @@ impl Programs {
             filter_pipeline,
             blend_pipeline,
             copy_pipeline,
+            mask_pipeline,
+            mask_textures: Vec::new(),
             resources,
             strips_arena: StripBufferArena::new(device),
             encoded_paints_data,
@@ -2159,6 +2217,73 @@ impl Programs {
             self.maybe_resize_gradient_tex(device, resource_texture_dimension_2d, gradient_cache);
             self.upload_gradient_texture(queue, gradient_cache);
             gradient_cache.mark_synced();
+        }
+    }
+
+    /// Upload the masks of the scene to be rendered, reusing textures and uploads of the last one.
+    fn prepare_masks(&mut self, device: &Device, queue: &Queue, masks: &[Mask]) {
+        for (index, mask) in masks.iter().enumerate() {
+            let existing = self.mask_textures.get(index);
+            if existing.is_some_and(|existing| existing.mask == *mask) {
+                continue;
+            }
+
+            let width = u32::from(mask.width()).max(1);
+            let height = u32::from(mask.height()).max(1);
+            if !existing.is_some_and(|existing| {
+                existing.texture.width() >= width && existing.texture.height() >= height
+            }) {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Mask Texture"),
+                    size: Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let bind_group = Self::create_copy_bind_group(
+                    device,
+                    &self.copy_bind_group_layout,
+                    &texture.create_view(&TextureViewDescriptor::default()),
+                );
+                let mask_texture = MaskTexture {
+                    mask: mask.clone(),
+                    texture,
+                    bind_group,
+                };
+                if index < self.mask_textures.len() {
+                    self.mask_textures[index] = mask_texture;
+                } else {
+                    self.mask_textures.push(mask_texture);
+                }
+            }
+
+            let mask_texture = &mut self.mask_textures[index];
+            mask_texture.mask = mask.clone();
+            if mask.width() == 0 || mask.height() == 0 {
+                continue;
+            }
+
+            queue.write_texture(
+                mask_texture.texture.as_image_copy(),
+                mask.data(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(u32::from(mask.width())),
+                    rows_per_image: None,
+                },
+                Extent3d {
+                    width: u32::from(mask.width()),
+                    height: u32::from(mask.height()),
+                    depth_or_array_layers: 1,
+                },
+            );
         }
     }
 
@@ -2942,6 +3067,49 @@ impl RendererContext<'_> {
         );
     }
 
+    fn mask_pass_inner(&mut self, masks: RangedSlice<'_, MaskOp>, target: LayerTextureId) {
+        let texture_size = self.texture_size();
+        let mask_textures = &self.programs.mask_textures;
+        let instances = &mut self.scratch_buffers.mask_instances;
+        instances.clear();
+        instances.extend(masks.iter().map(|op| {
+            let mask = &mask_textures[op.mask_index as usize].mask;
+            GpuMaskInstance::new(op, mask, texture_size)
+        }));
+
+        let instance_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Mask Instances Buffer"),
+                contents: bytemuck::cast_slice(instances),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let mut render_pass = self.encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("Apply Masks"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: self.programs.resources.layer_view(target),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        render_pass.set_pipeline(&self.programs.mask_pipeline);
+        render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
+        // Each mask has its own texture, so bind it per instance.
+        for (instance, op) in (0_u32..).zip(masks.iter()) {
+            let mask_texture = &mask_textures[op.mask_index as usize];
+            render_pass.set_bind_group(0, &mask_texture.bind_group, &[]);
+            render_pass.draw(0..4, instance..instance + 1);
+        }
+    }
+
     fn filter_pass_inner(&mut self, plan: &FilterPassPlan, bindings: FilterPassBindings) {
         let resources = &self.programs.resources;
         if !self
@@ -3135,6 +3303,16 @@ impl Backend for RendererContext<'_> {
         bindings: BlendPassBindings,
     ) -> Result<(), Self::Error> {
         self.blend_pass_inner(blends, blend_strips, bindings);
+
+        Ok(())
+    }
+
+    fn mask_pass(
+        &mut self,
+        masks: RangedSlice<'_, MaskOp>,
+        target: LayerTextureId,
+    ) -> Result<(), Self::Error> {
+        self.mask_pass_inner(masks, target);
 
         Ok(())
     }

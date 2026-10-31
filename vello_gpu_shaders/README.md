@@ -14,34 +14,38 @@ generated GLSL shader programs, used by the Vello GPU renderer.
 ## Features
 
 - Single source of truth authored as [WESL](https://wesl-lang.dev/) programs.
-- Automated build step that links WESL, then uses
+- A generator that links WESL, then uses
   [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) to minify the resulting
-  WGSL.
-- Optional generation of minified GLSL and reflection metadata for WebGL.
+  WGSL, its output committed so that a build of `vello_gpu` runs no WESL linker.
+- Optional minified GLSL and reflection metadata for WebGL (the `glsl` feature).
 
 ## Usage
 
-This crate provides linked WGSL programs and the build step for GLSL programs
-used by Vello GPU.
+This crate provides linked WGSL programs and GLSL programs used by Vello GPU, as
+two committed modules in `src/generated/`: `wgsl.rs`, and `wgsl_glsl.rs`, which
+the `glsl` feature includes in its place.
 
-Whenever the WESL shaders are updated, the build script automatically relinks
-and minifies the WGSL. When the `glsl` feature is enabled, it also regenerates
-the minified GLSL programs and reflection metadata used by `vello_gpu`.
-
-To inspect the generated WebGL GLSL and the embedded `compiled_shaders.rs`
-module used by `vello_gpu`, create local copies by running:
+Whenever the WESL shaders are updated, write the modules again:
 
 ```sh
-cargo run -p vello_gpu_shaders --features glsl
+cargo run -p vello_gpu_shaders --features regenerate
 ```
 
-The generated files will be written into the `generated_glsl` folder.
+The crate's tests fail while a committed module differs from what the shaders
+give.
 
-To retain authored identifiers and Naga's readable formatting for debugging,
-enable the diagnostic `unminified` feature as well:
+To inspect the generated WebGL GLSL and the module used by `vello_gpu`, create
+local copies in the `generated_glsl` folder by running:
 
 ```sh
-cargo run -p vello_gpu_shaders --features glsl,unminified
+cargo run -p vello_gpu_shaders --features regenerate -- --inspect
+```
+
+To retain authored identifiers and Naga's readable formatting for debugging, add
+`--unminified`:
+
+```sh
+cargo run -p vello_gpu_shaders --features regenerate -- --inspect --unminified
 ```
 
 ## Minimum supported Rust Version (MSRV)

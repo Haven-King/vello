@@ -25,6 +25,7 @@ pub(crate) fn compile_wgsl_shader(
     vertex_entry: &str,
     fragment_entry: &str,
     original_global_names: &BTreeMap<String, String>,
+    minified: bool,
 ) -> CompiledGlsl {
     let module = wgsl::parse_str(source).unwrap();
 
@@ -47,6 +48,7 @@ pub(crate) fn compile_wgsl_shader(
             ShaderStage::Vertex,
             &options,
             original_global_names,
+            minified,
         ),
         fragment: compile_stage(
             &module,
@@ -54,6 +56,7 @@ pub(crate) fn compile_wgsl_shader(
             ShaderStage::Fragment,
             &options,
             original_global_names,
+            minified,
         ),
     }
 }
@@ -64,6 +67,7 @@ fn compile_stage(
     shader_stage: ShaderStage,
     options: &glsl::Options,
     original_global_names: &BTreeMap<String, String>,
+    minified: bool,
 ) -> Stage {
     let mut module = module.clone();
     module
@@ -97,8 +101,11 @@ fn compile_stage(
         &module.global_variables,
         original_global_names,
     );
-    #[cfg(not(feature = "unminified"))]
-    let source = crate::minify::minify_whitespace(&source, true);
+    let source = if minified {
+        crate::minify::minify_whitespace(&source, true)
+    } else {
+        source
+    };
 
     Stage {
         source,

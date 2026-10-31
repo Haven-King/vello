@@ -19,28 +19,32 @@ targets = []
 [dependencies]
 naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "glsl-out"], optional = true }
 
-[build-dependencies]
+# Writing the committed modules again (`regenerate`): the WESL linker and its parser, pinned
+# exactly: the 0.4.1 releases of wesl and its wgsl-* crates require rustc 1.96, newer than our
+# toolchain. The wgsl-*/wesl-macros pins force wesl's own `^0.4` transitive requirements to resolve
+# to 0.4.0 as well.
+wesl = { version = "=0.4.0", optional = true }
+wesl-macros = { version = "=0.4.0", optional = true }
+wgsl-parse = { version = "=0.4.0", optional = true }
+wgsl-types = { version = "=0.4.0", optional = true }
+
+[dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "glsl-out"] }
-# Pinned exactly: the 0.4.1 releases of wesl and its wgsl-* crates require rustc 1.96,
-# newer than our toolchain. The wgsl-*/wesl-macros pins force wesl's own `^0.4`
-# transitive requirements to resolve to 0.4.0 as well.
 wesl = "=0.4.0"
 wesl-macros = "=0.4.0"
 wgsl-parse = "=0.4.0"
 wgsl-types = "=0.4.0"
 
-[dev-dependencies]
-naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "glsl-out"] }
-wesl = "=0.4.0"
-
 [features]
 glsl = ["dep:naga"]
-unminified = []
+# The binary that writes `src/generated/` again from `shaders/`.
+regenerate = ["dep:naga", "dep:wesl", "dep:wesl-macros", "dep:wgsl-parse", "dep:wgsl-types"]
 
 [[bin]]
 name = "vello_gpu_shaders"
 path = "src/main.rs"
 test = false
+required-features = ["regenerate"]
 
 [lints]
 workspace = true

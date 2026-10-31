@@ -7,18 +7,29 @@ const EXTEND_PAD: u32 = 0u;
 const EXTEND_REPEAT: u32 = 1u;
 const EXTEND_REFLECT: u32 = 2u;
 
+/// The texel `t` falls in, extended into `0..max`, as `vello_cpu`'s `extend_mode` gives it.
 fn extend_mode(t: f32, mode: u32, max: f32) -> f32 {
     switch mode {
         case EXTEND_PAD: {
             return clamp(t, 0.0, max - 1.0);
         }
         case EXTEND_REPEAT: {
-            return extend_mode_normalized(t / max, mode) * max;
+            return euclid_mod(floor(t), max);
         }
         case EXTEND_REFLECT, default: {
-            return extend_mode_normalized(t / max, mode) * max;
+            let period = max + max;
+            let r = euclid_mod(floor(t), period);
+            return select(r, period - 1.0 - r, r >= max);
         }
     }
+}
+
+// `t` and `m` are whole, so `q * m` is exact below 2^24 and needs no fused multiply-add, which
+// GLSL ES 3.0 lacks.
+fn euclid_mod(t: f32, m: f32) -> f32 {
+    let q = round(t / m);
+    let r = t - q * m;
+    return select(r, r + m, r < 0.0);
 }
 
 fn extend_mode_normalized(t: f32, mode: u32) -> f32 {

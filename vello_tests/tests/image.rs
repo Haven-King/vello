@@ -89,8 +89,7 @@ fn image_pad_x_pad_y(ctx: &mut impl Renderer) {
     repeat(ctx, Extend::Pad, Extend::Pad);
 }
 
-// TODO: Doesn't work correctly in the GPU renderer due to a difference in sampling behavior.
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn image_bilinear_repeat_x_pad_y(ctx: &mut impl Renderer) {
     let rect = Rect::new(10.0, 10.0, 90.0, 90.0);
     let image_source = rgb_img_2x2(ctx);
@@ -598,6 +597,42 @@ fn image_bilinear_crisp_10x_scale_clipped(ctx: &mut impl Renderer) {
     ctx.push_clip_layer(&Circle::new((50.0, 50.0), 38.0).to_path(0.1));
     crisp(ctx, Affine::scale(10.0), image_source);
     ctx.pop_layer();
+}
+
+// A magnified image whose right and bottom edges lie inside the rectangle, padded past them. Each
+// filter tap is padded on its own, so the last row and column stay the image's own; padding the
+// sample's location once before filtering blended them with the row and column before them.
+
+fn padded(ctx: &mut impl Renderer, quality_: ImageQuality) {
+    let image_source = rgb_img_2x3(ctx);
+    quality(
+        ctx,
+        Affine::translate((15.0, 15.0)) * Affine::scale(20.0),
+        image_source,
+        quality_,
+        Extend::Pad,
+    );
+}
+
+#[vello_test]
+fn image_bilinear_pad_magnified(ctx: &mut impl Renderer) {
+    padded(ctx, ImageQuality::Medium);
+}
+
+#[vello_test]
+fn image_bicubic_pad_magnified(ctx: &mut impl Renderer) {
+    padded(ctx, ImageQuality::High);
+}
+
+#[vello_test]
+fn image_nearest_pad_magnified(ctx: &mut impl Renderer) {
+    padded(ctx, ImageQuality::Low);
+}
+
+#[vello_test]
+fn image_bilinear_crisp_pad_magnified(ctx: &mut impl Renderer) {
+    ctx.set_image_magnification(Magnification::Crisp);
+    padded(ctx, ImageQuality::Medium);
 }
 
 #[vello_test]

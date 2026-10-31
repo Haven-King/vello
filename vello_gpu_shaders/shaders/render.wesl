@@ -25,7 +25,6 @@
 
 import package::helpers::alpha::unpack_alphas_from_channel;
 import package::helpers::blurred_rounded_rect::calculate_blurred_rounded_rect;
-import package::helpers::extend::extend_mode;
 import package::helpers::external_texture::sample_external_image;
 import package::helpers::gradient::{
     apply_gradient_transform,
@@ -399,21 +398,15 @@ fn fs_main(
                 let image_texel1 = load_encoded_paint_texel(paint_tex_idx, 1u);
                 crisp_span = get_image_crisp_span(get_image_transform(image_texel0, image_texel1));
             }
-            let extended_xy = vec2<f32>(
-                extend_mode(sample_xy.x, image_extend_modes.x, image_size.x),
-                extend_mode(sample_xy.y, image_extend_modes.y, image_size.y)
-            );
-
-            // TODO: add a fast path for images where we are using bilinear sampling and want transparent pixels,
-            // using GPU-native bilinear sampling
-
-            let final_xy = image_offset + extended_xy;
+            // Each tap is extended within the image, as `vello_cpu` extends it, so a padded
+            // image's last texels and a repeated image's seams filter as on the CPU.
             let sample_color = sample_external_image(
                 external_texture_0,
                 image_quality,
-                final_xy,
+                sample_xy,
                 image_offset,
                 image_size,
+                image_extend_modes,
                 crisp_span,
             );
 

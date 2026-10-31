@@ -134,18 +134,12 @@ fn image_pixmap_tiled_reflect(ctx: &mut impl Renderer) {
     tiled(ctx, Extend::Reflect, Extend::Reflect, ImageQuality::Low);
 }
 
-// Vello 0.3.0's GPU shader applies the extend mode once before filtering, so bilinear and
-// bicubic taps across a repeat or reflect seam differ from the CPU. Uploaded `OpaqueId` images
-// do the same. Upstream main samples each tap with its extend mode.
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn image_pixmap_tiled_repeat_x_reflect_y_bilinear(ctx: &mut impl Renderer) {
     tiled(ctx, Extend::Repeat, Extend::Reflect, ImageQuality::Medium);
 }
 
-// Vello 0.3.0's GPU shader applies the extend mode once before filtering, so bilinear and
-// bicubic taps across a repeat or reflect seam differ from the CPU. Uploaded `OpaqueId` images
-// do the same. Upstream main samples each tap with its extend mode.
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn image_pixmap_tiled_reflect_x_pad_y_bicubic(ctx: &mut impl Renderer) {
     tiled(ctx, Extend::Reflect, Extend::Pad, ImageQuality::High);
 }

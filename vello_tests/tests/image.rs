@@ -821,3 +821,80 @@ fn image_fully_transparent_tint(ctx: &mut impl Renderer) {
         ctx.fill_rect(&Rect::new(0.0, 0.0, 10.0, 10.0));
     }
 }
+
+// The u8 pipeline's bilinear filtering rounds each interpolation to the nearest level, so a
+// magnified image draws within a level of the f32 pipeline. Dividing by 255 as `(x + 255) >> 8`
+// rounded each of its two interpolations up by as much as a level.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn image_bilinear_u8_rounds_as_f32() {
+    use vello_common::pixmap::Pixmap;
+    use vello_cpu::{RasterizerSettings, RenderContext, RenderMode, Resources};
+
+    let (w, h) = (16_u16, 16_u16);
+    let mut data = Vec::with_capacity(usize::from(w) * usize::from(h) * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let a = (x * 17 + y * 3) % 256;
+            let r = (x * 13 + y * 29) % 256;
+            let g = (x * 7 + y * 41 + 90) % 256;
+            let b = (x * 37 + y * 11 + 30) % 256;
+            #[expect(clippy::cast_possible_truncation, reason = "each is below 256")]
+            data.extend([r * a / 255, g * a / 255, b * a / 255, a].map(|c| c as u8));
+        }
+    }
+    let image = Arc::new(Pixmap::from_parts(
+        data,
+        w,
+        h,
+        vello_common::pixmap::PixelMetadata {
+            alpha_type: vello_common::peniko::ImageAlphaType::AlphaPremultiplied,
+            may_have_transparency: true,
+        },
+    ));
+
+    for transform in [
+        Affine::translate((3.3, 2.7)) * Affine::scale(5.37),
+        Affine::translate((40.0, -10.0)) * Affine::rotate(0.4) * Affine::scale(4.2),
+    ] {
+        let draw = |mode: RenderMode| {
+            let mut ctx = RenderContext::new(100, 100);
+            ctx.set_paint_transform(transform);
+            ctx.set_paint(Image {
+                image: ImageSource::Pixmap(image.clone()),
+                sampler: ImageSampler {
+                    x_extend: Extend::Pad,
+                    y_extend: Extend::Pad,
+                    quality: ImageQuality::Medium,
+                    alpha: 1.0,
+                },
+            });
+            ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
+            ctx.flush();
+            let mut pixmap = Pixmap::new(100, 100);
+            ctx.render_with(
+                &mut pixmap,
+                &mut Resources::new(),
+                RasterizerSettings {
+                    render_mode: mode,
+                    ..RasterizerSettings::default()
+                },
+            );
+            pixmap.data_as_u8_slice().to_vec()
+        };
+        let (u8_drawn, f32_drawn) = (
+            draw(RenderMode::OptimizeSpeed),
+            draw(RenderMode::OptimizeQuality),
+        );
+        let largest = u8_drawn
+            .iter()
+            .zip(&f32_drawn)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(
+            largest <= 1,
+            "the u8 pipeline parts from the f32 pipeline by {largest} levels under {transform:?}"
+        );
+    }
+}

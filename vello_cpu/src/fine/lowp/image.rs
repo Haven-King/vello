@@ -8,7 +8,7 @@ use vello_common::encode::EncodedImage;
 use vello_common::fearless_simd::{f32x4, prelude::*, u8x16, u16x16};
 use vello_common::pixmap::Pixmap;
 use vello_common::simd::element_wise_splat;
-use vello_common::util::{Div255Ext, f32_to_u8, narrow, widen};
+use vello_common::util::{f32_to_u8, narrow, widen};
 
 /// A faster bilinear image renderer for the u8 pipeline.
 #[derive(Debug)]
@@ -97,9 +97,9 @@ impl<S: Simd> Iterator for BilinearImagePainter<'_, S> {
         let p01 = widen(sample(self.simd, &self.data, x_pos1, y_pos2));
         let p11 = widen(sample(self.simd, &self.data, x_pos2, y_pos2));
 
-        let ip1 = (p00 * fx_inv + p10 * fx).div_255();
-        let ip2 = (p01 * fx_inv + p11 * fx).div_255();
-        let res = narrow((ip1 * fy_inv + ip2 * fy).div_255());
+        let ip1 = div_255_rounded(p00 * fx_inv + p10 * fx);
+        let ip2 = div_255_rounded(p01 * fx_inv + p11 * fx);
+        let res = narrow(div_255_rounded(ip1 * fy_inv + ip2 * fy));
 
         self.data.cur_pos += self.data.image.x_advance;
 
@@ -234,9 +234,9 @@ impl<S: Simd> Iterator for PlainBilinearImagePainter<'_, S> {
         let p11 = widen(sample(self.simd, &self.data, x_pos2, self.y_pos2));
 
         // Bilinear interpolation
-        let ip1 = (p00 * fx_inv + p10 * fx).div_255();
-        let ip2 = (p01 * fx_inv + p11 * fx).div_255();
-        let res = narrow((ip1 * self.fy_inv + ip2 * self.fy).div_255());
+        let ip1 = div_255_rounded(p00 * fx_inv + p10 * fx);
+        let ip2 = div_255_rounded(p01 * fx_inv + p11 * fx);
+        let res = narrow(div_255_rounded(ip1 * self.fy_inv + ip2 * self.fy));
 
         self.cur_x_pos += self.advance;
 
@@ -245,3 +245,13 @@ impl<S: Simd> Iterator for PlainBilinearImagePainter<'_, S> {
 }
 
 u8x16_painter!(PlainBilinearImagePainter<'_, S>);
+
+/// `x / 255` rounded to the nearest whole number, for `x` up to `255 * 255`.
+///
+/// `Div255Ext::div_255`'s `(x + 255) >> 8` rounds up by as much as one, and bilinear filtering
+/// divides twice, so a filtered pixel drew up to two levels above the f32 pipeline's.
+#[inline(always)]
+fn div_255_rounded<S: Simd>(x: u16x16<S>) -> u16x16<S> {
+    let x = x + 128_u16;
+    (x + (x >> 8_u32)) >> 8_u32
+}

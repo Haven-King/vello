@@ -12,7 +12,12 @@ mod minify;
 #[cfg(feature = "glsl")]
 mod types;
 
-include!(concat!(env!("OUT_DIR"), "/compiled_shaders.rs"));
+// Written by `cargo run -p vello_gpu_shaders --features regenerate` from `shaders/` and committed,
+// so that no build links WESL; `tests/committed.rs` holds them to the sources.
+#[cfg(not(feature = "glsl"))]
+include!("generated/wgsl.rs");
+#[cfg(feature = "glsl")]
+include!("generated/wgsl_glsl.rs");
 
 #[cfg(all(test, feature = "glsl"))]
 mod tests {
